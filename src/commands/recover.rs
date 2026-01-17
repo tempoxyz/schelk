@@ -1,0 +1,188 @@
+// Command: recover
+// Restores scratch volume to virgin state by copying only changed blocks
+//
+// Pre-checks:
+//   1. App state must exist
+//   2. Volume must be currently mounted (via previous mount command)
+//   3. dmsetup and era_invalidate must be available in PATH
+//
+// Operation:
+//   1. Unmount the filesystem (flushes writes, prevents further modifications)
+//   2. Take dm-era metadata snapshot: dmsetup message bench_era 0 take_metadata_snap
+//   3. Collect changed blocks: era_invalidate --metadata-snapshot --written-since <era> /dev/ram0 > changed.xml
+//   4. Drop metadata snapshot: dmsetup message bench_era 0 drop_metadata_snap
+//   5. Remove dm-era device: dmsetup remove bench_era
+//   6. Parse changed.xml and copy affected blocks from virgin to scratch
+//   7. Update app state (clear mounted flag, remove changed.xml)
+//
+// Future: Save changed.xml to app state for crash recovery
+
+use std::io::{Write, stdout};
+use std::time::Instant;
+
+use eyre::{Result, WrapErr, eyre};
+
+use crate::error::not_initialized;
+use crate::{dmera, env, mount, state, volume};
+
+/// Run the recover command
+pub async fn run() -> Result<()> {
+    env::require_root()?;
+
+    let app_state = state::load()?.ok_or_else(not_initialized)?;
+
+    if !app_state.is_mounted {
+        return Err(not_mounted());
+    }
+
+    let base_era = app_state.current_era.unwrap_or(0);
+
+    // Check that dmsetup and era_invalidate are available
+    dmera::check_dmsetup().await?;
+    dmera::check_era_invalidate().await?;
+
+    // Verify dm-era device actually exists
+    if !dmera::exists(dmera::DM_ERA_NAME).await? {
+        return Err(eyre!(
+            "dm-era device '{}' does not exist.\n\
+             State says mounted but device is missing. This may indicate a system crash.\n\
+             Run 'schelk mount' to remount, or manually reset state.",
+            dmera::DM_ERA_NAME
+        ));
+    }
+
+    println!("Recovering scratch volume from virgin");
+    println!("  Virgin:  {}", app_state.virgin.display());
+    println!("  Scratch: {}", app_state.scratch.display());
+    println!();
+
+    // Step 1: Unmount the filesystem
+    println!("Unmounting {}...", app_state.mount_point.display());
+    mount::unmount(&app_state.mount_point)
+        .await
+        .wrap_err("Failed to unmount filesystem")?;
+
+    // Step 2: Take dm-era metadata snapshot
+    println!("Taking dm-era metadata snapshot...");
+    dmera::take_metadata_snapshot(dmera::DM_ERA_NAME)
+        .await
+        .wrap_err("Failed to take metadata snapshot")?;
+
+    // Step 3: Collect changed blocks with era_invalidate (via thinp library)
+    println!("Collecting changed blocks since era {}...", base_era);
+    let changed_blocks = match dmera::get_changed_blocks(&app_state.ramdisk, base_era as u32) {
+        Ok(blocks) => blocks,
+        Err(e) => {
+            // Try to drop the metadata snapshot before returning error
+            let _ = dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME).await;
+            return Err(e.wrap_err("Failed to collect changed blocks"));
+        }
+    };
+
+    // Step 4: Drop metadata snapshot
+    println!("Dropping metadata snapshot...");
+    dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME)
+        .await
+        .wrap_err("Failed to drop metadata snapshot")?;
+
+    // Step 5: Remove dm-era device
+    println!("Removing dm-era device...");
+    dmera::remove(dmera::DM_ERA_NAME)
+        .await
+        .wrap_err("Failed to remove dm-era device")?;
+
+    // Step 6: Copy affected blocks from virgin to scratch
+    let total_blocks: u64 = changed_blocks.iter().map(|r| r.len).sum();
+    let total_bytes = total_blocks * app_state.granularity;
+
+    let copy_duration = if changed_blocks.is_empty() {
+        println!("No blocks were modified. Nothing to recover.");
+        std::time::Duration::ZERO
+    } else {
+        println!(
+            "Copying {} changed blocks ({})...",
+            total_blocks,
+            format_bytes(total_bytes)
+        );
+
+        let copy_start = Instant::now();
+        let mut last_percent: u64 = 0;
+        volume::copy_blocks(
+            &app_state.virgin,
+            &app_state.scratch,
+            &changed_blocks,
+            app_state.granularity,
+            |copied, total| {
+                let percent = if total > 0 {
+                    (copied * 100) / total
+                } else {
+                    100
+                };
+                if percent != last_percent {
+                    last_percent = percent;
+                    print!("\r  Progress: {}%", percent);
+                    let _ = stdout().flush();
+                }
+            },
+        )
+        .wrap_err("Failed to copy blocks")?;
+        let elapsed = copy_start.elapsed();
+
+        println!("\r  Progress: 100% - Done");
+        elapsed
+    };
+
+    // Step 7: Update app state
+    let mut app_state = app_state;
+    app_state.is_mounted = false;
+    app_state.current_era = None;
+    state::save(&app_state)?;
+
+    println!();
+    println!("Recovery complete.");
+    println!("  Blocks restored: {}", total_blocks);
+    println!("  Bytes copied:    {}", format_bytes(total_bytes));
+    if total_bytes > 0 && copy_duration.as_secs_f64() > 0.0 {
+        let duration_secs = copy_duration.as_secs_f64();
+        let speed = total_bytes as f64 / duration_secs;
+        println!("  Time elapsed:    {}", format_duration(copy_duration));
+        println!("  Average speed:   {}/s", format_bytes(speed as u64));
+    }
+
+    Ok(())
+}
+
+fn not_mounted() -> eyre::Report {
+    eyre!("Volume is not mounted.")
+}
+
+/// Format bytes in human-readable form
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+
+    if bytes >= GB {
+        format!("{:.2} GB", bytes as f64 / GB as f64)
+    } else if bytes >= MB {
+        format!("{:.2} MB", bytes as f64 / MB as f64)
+    } else if bytes >= KB {
+        format!("{:.2} KB", bytes as f64 / KB as f64)
+    } else {
+        format!("{} bytes", bytes)
+    }
+}
+
+/// Format duration in human-readable form
+fn format_duration(duration: std::time::Duration) -> String {
+    let secs = duration.as_secs_f64();
+    if secs >= 60.0 {
+        let mins = (secs / 60.0).floor();
+        let remaining_secs = secs - (mins * 60.0);
+        format!("{:.0}m {:.2}s", mins, remaining_secs)
+    } else if secs >= 1.0 {
+        format!("{:.2}s", secs)
+    } else {
+        format!("{:.0}ms", secs * 1000.0)
+    }
+}
