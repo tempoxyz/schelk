@@ -20,6 +20,7 @@ use eyre::Result;
 
 use crate::error::{not_initialized, volume_mismatch};
 use crate::{dmera, env, io, mount, ramdisk, state, volume};
+use eyre::eyre;
 
 /// Run the mount command
 pub async fn run() -> Result<()> {
@@ -29,6 +30,17 @@ pub async fn run() -> Result<()> {
 
     if app_state.is_mounted {
         return Err(crate::error::already_mounted());
+    }
+
+    // Check if mountpoint is already in use (ground-truth check for crash recovery)
+    if mount::is_mounted(&app_state.mount_point)? {
+        return Err(eyre!(
+            "Mountpoint {} is already in use.\n\
+             State says not mounted, but filesystem is mounted. This may indicate a crash.\n\
+             Manually unmount with: sudo umount {}",
+            app_state.mount_point.display(),
+            app_state.mount_point.display()
+        ));
     }
 
     // Check that dmsetup is available

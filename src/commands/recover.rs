@@ -56,11 +56,18 @@ pub async fn run() -> Result<()> {
     println!("  Scratch: {}", app_state.scratch.display());
     println!();
 
-    // Step 1: Unmount the filesystem
-    println!("Unmounting {}...", app_state.mount_point.display());
-    mount::unmount(&app_state.mount_point)
-        .await
-        .wrap_err("Failed to unmount filesystem")?;
+    // Step 1: Unmount the filesystem (if actually mounted)
+    if mount::is_mounted(&app_state.mount_point)? {
+        println!("Unmounting {}...", app_state.mount_point.display());
+        mount::unmount(&app_state.mount_point)
+            .await
+            .wrap_err("Failed to unmount filesystem")?;
+    } else {
+        println!(
+            "Mountpoint {} not actually mounted, skipping unmount...",
+            app_state.mount_point.display()
+        );
+    }
 
     // Step 2: Take dm-era metadata snapshot
     println!("Taking dm-era metadata snapshot...");

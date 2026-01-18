@@ -12,6 +12,7 @@
 use eyre::Result;
 
 use crate::dmera;
+use crate::mount;
 use crate::state;
 
 /// Run the status command
@@ -43,9 +44,15 @@ pub async fn run() -> Result<()> {
             println!();
             println!("Runtime status:");
             let device_exists = dmera::exists(dmera::DM_ERA_NAME).await.unwrap_or(false);
+            let actually_mounted = mount::is_mounted(&state.mount_point).unwrap_or(false);
 
             if state.is_mounted {
                 println!("  Mounted: yes (state)");
+                if actually_mounted {
+                    println!("  Mounted: yes (actual)");
+                } else {
+                    println!("  Mounted: NO (actual) - state inconsistent!");
+                }
                 if device_exists {
                     println!("  dm-era device: active");
                 } else {
@@ -56,6 +63,11 @@ pub async fn run() -> Result<()> {
                 }
             } else {
                 println!("  Mounted: no (state)");
+                if actually_mounted {
+                    println!("  Mounted: YES (actual) - state inconsistent!");
+                } else {
+                    println!("  Mounted: no (actual)");
+                }
                 if device_exists {
                     println!("  dm-era device: EXISTS (state inconsistent, stale device?)");
                 } else {

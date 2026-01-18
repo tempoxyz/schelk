@@ -10,6 +10,7 @@ use tokio::process::Command;
 /// Output from a command execution
 #[derive(Debug)]
 pub struct Output {
+    #[allow(dead_code)]
     pub stdout: String,
     pub stderr: String,
     pub success: bool,
