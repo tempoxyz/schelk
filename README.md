@@ -21,8 +21,11 @@ made to the scratch volume and then surgically patching them.
 - sufficiently new rust version. 
 - `era_invalidate` from thin-provisioning-tools. While it can be installed via 
   `apt install thin-provisioning-tools` it is not recommended as it may be outdated. Anything 
-  pre-1.0 is going to be slow. The newer version is available at [thin-provisioning-tools](https://github.com/device-mapper-utils/thin-provisioning-tools) repo.
+  pre-1.0 is going to be slow. The newer version is available at [thin-provisioning-tools](https://github.com/device-mapper-utils/thin-provisioning-tools) repo.[^2]
 - `dmsetup`. Should come with your distro most of the time.
+
+[^2]: You may have luck with this command
+  ```git clone https://github.com/jthornber/thin-provisioning-tools /tmp/tpt && cargo build --release --manifest-path /tmp/tpt/Cargo.toml && sudo cp /tmp/tpt/target/release/pdata_tools /usr/local/bin/ && sudo ln -sf /usr/local/bin/pdata_tools /usr/local/bin/era_invalidate```
 
 # Usage
 
