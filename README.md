@@ -79,6 +79,7 @@ otherwise you will have perform the full copy.
 
 # FAQ and rationale
  
- - Why not use LVM snapshots or ZFS/btrfs? This tool is for benchmarks and we want to get faithful 
-   results from it. Those introduce a measurable overhead.
- - Why not LVM thin of the read-only base for the golden and LV for writable overlay? The same reasons. In this case, all the reads are going to hit one device but writes are going to hit the other.
+- Why not use LVM snapshots or ZFS/btrfs? This tool is for benchmarks and we want to get faithful 
+  results from it. Those introduce a measurable overhead.
+- Why not LVM thin of the read-only base for the golden and LV for writable overlay? The same reasons. In this case,
+  all the reads are going to hit one device but writes are going to hit the other.
