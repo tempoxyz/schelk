@@ -107,22 +107,33 @@ pub fn is_device_mounted(device: &Path) -> Result<Option<String>> {
             // Try to canonicalize the mounted device to resolve symlinks
             let mounted_canonical = Path::new(mounted_device).canonicalize().ok();
 
-            // Compare both canonical and non-canonical paths to handle all cases
-            let is_match = if let (Some(dev_canon), Some(mount_canon)) = (&device_canonical, &mounted_canonical) {
-                // Both canonicalized successfully, compare canonical paths
-                dev_canon == mount_canon
-            } else {
-                // Fall back to string comparison if canonicalization fails
-                mounted_device == device_str
-                    || device_canonical.as_ref().map_or(false, |dc| dc.to_string_lossy() == mounted_device)
-                    || mounted_canonical.as_ref().map_or(false, |mc| mc.to_string_lossy() == device_str)
-            };
-
-            if is_match {
+            // Check if the devices match
+            if devices_match(&device_str, mounted_device, &device_canonical, &mounted_canonical) {
                 return Ok(Some(mountpoint.to_string()));
             }
         }
     }
 
     Ok(None)
+}
+
+/// Helper function to check if two device paths refer to the same device
+///
+/// Compares both canonical and non-canonical paths to handle cases where
+/// canonicalization might fail on one or both sides.
+fn devices_match(
+    device_str: &str,
+    mounted_device: &str,
+    device_canonical: &Option<std::path::PathBuf>,
+    mounted_canonical: &Option<std::path::PathBuf>,
+) -> bool {
+    // If both canonicalized successfully, compare canonical paths
+    if let (Some(dev_canon), Some(mount_canon)) = (device_canonical, mounted_canonical) {
+        return dev_canon == mount_canon;
+    }
+
+    // Fall back to string comparison if canonicalization fails on either side
+    mounted_device == device_str
+        || device_canonical.as_ref().map_or(false, |dc| dc.to_string_lossy() == mounted_device)
+        || mounted_canonical.as_ref().map_or(false, |mc| mc.to_string_lossy() == device_str)
 }
