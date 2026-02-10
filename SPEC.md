@@ -25,7 +25,8 @@ There are many errors modes in this tool. We need to defend against that. The us
 2. full-recover
 3. mount
 4. recover
-5. status
+5. promote
+6. status
 
 ### `init`
 
@@ -115,6 +116,50 @@ And then perform copy of the blocks from the virgin to scratch according to `cha
 progress of copying must be displayed. After finish, it should print a report.
 
 Once it succeeded we should update the app state and remove `changed.xml`.
+
+### `promote`
+
+Promotes the scratch volume to become the new virgin. This is the reverse of `recover`: instead of
+restoring scratch from virgin, it updates virgin from scratch. Useful when the benchmark run has
+produced a new desired baseline state (e.g., after a schema migration or data load that should 
+become the new starting point for future runs).
+
+Pre-checks:
+
+- App state must exist (initialized).
+- The volume must be mounted (`is_mounted = true`), so that dm-era has tracked the changes.
+- `dmsetup`, `era_invalidate` must be available in PATH.
+- dm-era device must exist.
+
+Must be confirmed either by `-y` or an interactive prompt, since this is a destructive operation 
+that permanently modifies the virgin volume.
+
+Steps:
+
+1. **Unmount the filesystem.** Same as `recover` — flushes writes and prevents further modifications.
+
+2. **Collect changed blocks via dm-era.** Same metadata snapshot and `era_invalidate` flow as 
+   `recover`:
+   ```
+   dmsetup message bench_era 0 take_metadata_snap
+   era_invalidate --metadata-snapshot --written-since <base_era> /dev/ram0 > changed.xml
+   dmsetup message bench_era 0 drop_metadata_snap
+   ```
+
+3. **Tear down dm-era.**
+   ```
+   dmsetup remove bench_era
+   ```
+
+4. **Copy changed blocks from scratch to virgin.** This is the key difference from `recover`: the
+   copy direction is reversed. Uses the same parallel block copy mechanism but with scratch as 
+   source and virgin as destination. Progress must be displayed.
+
+5. **Update app state:**
+   - Set `is_mounted = false`.
+   - Clear `current_era`.
+   - Recompute and store the new `virgin_superblock_hash` (since the virgin has changed).
+   - Save atomically.
 
 ### `status`
 
