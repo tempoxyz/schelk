@@ -92,12 +92,10 @@ pub fn is_mounted(mountpoint: &Path) -> Result<bool> {
 pub fn is_device_mounted(device: &Path) -> Result<Option<String>> {
     let mounts = fs::read_to_string("/proc/mounts").wrap_err("Failed to read /proc/mounts")?;
 
-    // Canonicalize the device path to resolve symlinks
-    let device_str = device
-        .canonicalize()
-        .unwrap_or_else(|_| device.to_path_buf())
-        .to_string_lossy()
-        .into_owned();
+    // Try to canonicalize the device path to resolve symlinks
+    // If canonicalization fails, we'll use the original path
+    let device_canonical = device.canonicalize().ok();
+    let device_str = device.to_string_lossy();
 
     for line in mounts.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -107,11 +105,20 @@ pub fn is_device_mounted(device: &Path) -> Result<Option<String>> {
             let mountpoint = parts[1];
 
             // Try to canonicalize the mounted device to resolve symlinks
-            if let Ok(mounted_device_path) = Path::new(mounted_device).canonicalize() {
-                if mounted_device_path.to_string_lossy() == device_str {
-                    return Ok(Some(mountpoint.to_string()));
-                }
-            } else if mounted_device == device_str {
+            let mounted_canonical = Path::new(mounted_device).canonicalize().ok();
+
+            // Compare both canonical and non-canonical paths to handle all cases
+            let is_match = if let (Some(dev_canon), Some(mount_canon)) = (&device_canonical, &mounted_canonical) {
+                // Both canonicalized successfully, compare canonical paths
+                dev_canon == mount_canon
+            } else {
+                // Fall back to string comparison if canonicalization fails
+                mounted_device == device_str
+                    || device_canonical.as_ref().map_or(false, |dc| dc.to_string_lossy() == mounted_device)
+                    || mounted_canonical.as_ref().map_or(false, |mc| mc.to_string_lossy() == device_str)
+            };
+
+            if is_match {
                 return Ok(Some(mountpoint.to_string()));
             }
         }
