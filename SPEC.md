@@ -3,7 +3,7 @@
 Read the README.md and other documents. This is linux only.
 
 ## Mindset
- 
+
 We should be really friendly to the user and try to minimize the opportunity to misuse this tool.
 The risk is that the user will get the wrong data from benchmarking or mess up their volumes and
 that can lead to a very costly full recovery.
@@ -48,12 +48,12 @@ Then after checks it writes this data and initializes the app state. Checks:
 
 > 🦄 Future Feature: interactive wizard. Help the user setting up in an interactive way.
 
-This should let the user know that now schelk expects that it controls both volumes. Mounting them 
+This should let the user know that now schelk expects that it controls both volumes. Mounting them
 may ruin them.
 
 ### `full-recover`
 
-Performs copy from the virgin to the scratch. This is very costly and should be ideally performed 
+Performs copy from the virgin to the scratch. This is very costly and should be ideally performed
 only once. Must be confirmed either by -y.
 
 ### `mount`
@@ -61,7 +61,7 @@ only once. Must be confirmed either by -y.
 Checks:
 
 1. Checks that the RAM disk is adequately sized for the job.
-1. Spot checks state of volumes and verifies that it is the same as the expected per the state of the 
+1. Spot checks state of volumes and verifies that it is the same as the expected per the state of the
 app.
 
 Zeroes the ramdisk and initializes dm-era for the scratch volume.
@@ -71,13 +71,13 @@ dmsetup create bench_era ... era /dev/ram0 /dev/nvme_ <granularity>
 dmsetup message bench_era 0 checkpoint
 ```
 
-Mounts the scratch volume at the specified location. 
+Mounts the scratch volume at the specified location.
 It should be fool proof, in that it should not allow mount after amount.
 
 ### `recover`
- 
+
 Pre-checks:
- 
+
 - make sure that the mount previously happened. This should be performed by reading the app state
   first.
 - `dmsetup`, `era_invalidate` is available in the PATH.
@@ -88,8 +88,8 @@ from removing a filesystem while there is still some activity. That also flushes
 ```
 umount /schelk
 ```
- 
-Take dm-era snapshot, invalidate. 
+
+Take dm-era snapshot, invalidate.
 
 ```
 # Create a clone of metadata for userspace reading.
@@ -112,7 +112,7 @@ We should tear down the device mapper.
 dmsetup remove bench_era
 ```
 
-And then perform copy of the blocks from the virgin to scratch according to `changed.xml`. The 
+And then perform copy of the blocks from the virgin to scratch according to `changed.xml`. The
 progress of copying must be displayed. After finish, it should print a report.
 
 Once it succeeded we should update the app state and remove `changed.xml`.
@@ -121,7 +121,7 @@ Once it succeeded we should update the app state and remove `changed.xml`.
 
 Promotes the scratch volume to become the new virgin. This is the reverse of `recover`: instead of
 restoring scratch from virgin, it updates virgin from scratch. Useful when the benchmark run has
-produced a new desired baseline state (e.g., after a schema migration or data load that should 
+produced a new desired baseline state (e.g., after a schema migration or data load that should
 become the new starting point for future runs).
 
 Pre-checks:
@@ -131,14 +131,14 @@ Pre-checks:
 - `dmsetup`, `era_invalidate` must be available in PATH.
 - dm-era device must exist.
 
-Must be confirmed either by `-y` or an interactive prompt, since this is a destructive operation 
+Must be confirmed either by `-y` or an interactive prompt, since this is a destructive operation
 that permanently modifies the virgin volume.
 
 Steps:
 
 1. **Unmount the filesystem.** Same as `recover` — flushes writes and prevents further modifications.
 
-2. **Collect changed blocks via dm-era.** Same metadata snapshot and `era_invalidate` flow as 
+2. **Collect changed blocks via dm-era.** Same metadata snapshot and `era_invalidate` flow as
    `recover`:
    ```
    dmsetup message bench_era 0 take_metadata_snap
@@ -152,7 +152,7 @@ Steps:
    ```
 
 4. **Copy changed blocks from scratch to virgin.** This is the key difference from `recover`: the
-   copy direction is reversed. Uses the same parallel block copy mechanism but with scratch as 
+   copy direction is reversed. Uses the same parallel block copy mechanism but with scratch as
    source and virgin as destination. Progress must be displayed.
 
 5. **Update app state:**
@@ -171,7 +171,7 @@ The app state lives in `/var/lib/schelk/state.json`. This is a system-wide locat
 requires root privileges to operate (dm-era, mount, block device access). Using a fixed path avoids
 confusion when running with `sudo` (which would otherwise use root's home directory for XDG paths).
 
-Every update should be performed robustly: atomic updates (write to temp file, fsync, rename), 
+Every update should be performed robustly: atomic updates (write to temp file, fsync, rename),
 `fsync` the directory, etc.
 
 ## Volume Checks

@@ -1,5 +1,5 @@
 // CLI definition using clap
-// Defines subcommands: init, full-recover, mount, recover, status
+// Defines subcommands: init, full-recover, mount, recover, promote, status
 // Global flags: -y (skip confirmation)
 //
 // Default behavior: If no subcommand is provided, runs 'status'
