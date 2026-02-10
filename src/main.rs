@@ -54,6 +54,7 @@ async fn main() -> eyre::Result<()> {
         Some(Command::FullRecover) => commands::full_recover::run(cli.yes).await,
         Some(Command::Mount) => commands::mount::run().await,
         Some(Command::Recover) => commands::recover::run().await,
+        Some(Command::Promote) => commands::promote::run(cli.yes).await,
         Some(Command::Status) | None => commands::status::run().await,
     }
 }

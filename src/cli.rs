@@ -68,6 +68,9 @@ pub enum Command {
     /// Recover scratch volume from virgin (surgical restore)
     Recover,
 
+    /// Promote scratch state to virgin (update baseline)
+    Promote,
+
     /// Show current status (default command)
     Status,
 }
