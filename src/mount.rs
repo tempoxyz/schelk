@@ -83,3 +83,39 @@ pub fn is_mounted(mountpoint: &Path) -> Result<bool> {
 
     Ok(false)
 }
+
+/// Check if a device is mounted anywhere
+///
+/// Parses /proc/mounts to determine if the device is mounted at any mountpoint.
+/// This is useful to prevent writes to a device that is actively mounted,
+/// which could cause filesystem corruption.
+pub fn is_device_mounted(device: &Path) -> Result<Option<String>> {
+    let mounts = fs::read_to_string("/proc/mounts").wrap_err("Failed to read /proc/mounts")?;
+
+    // Canonicalize the device path to resolve symlinks
+    let device_str = device
+        .canonicalize()
+        .unwrap_or_else(|_| device.to_path_buf())
+        .to_string_lossy()
+        .into_owned();
+
+    for line in mounts.lines() {
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() >= 2 {
+            // First field is the device, second is the mountpoint
+            let mounted_device = parts[0];
+            let mountpoint = parts[1];
+
+            // Try to canonicalize the mounted device to resolve symlinks
+            if let Ok(mounted_device_path) = Path::new(mounted_device).canonicalize() {
+                if mounted_device_path.to_string_lossy() == device_str {
+                    return Ok(Some(mountpoint.to_string()));
+                }
+            } else if mounted_device == device_str {
+                return Ok(Some(mountpoint.to_string()));
+            }
+        }
+    }
+
+    Ok(None)
+}

@@ -67,6 +67,18 @@ pub async fn run(yes: bool) -> Result<()> {
 
     println!();
 
+    // Pre-check: Ensure virgin device is not mounted elsewhere
+    // Writing to a mounted device can cause filesystem corruption
+    if let Some(mountpoint) = mount::is_device_mounted(&app_state.virgin)? {
+        return Err(eyre!(
+            "Virgin device {} is currently mounted at {}.\n\
+             Writing to a mounted device can corrupt the filesystem.\n\
+             Please unmount the device first before running promote.",
+            app_state.virgin.display(),
+            mountpoint
+        ));
+    }
+
     // Step 1: Unmount the filesystem (if actually mounted)
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
