@@ -59,6 +59,36 @@ pub async fn unmount(mountpoint: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Force unmount a filesystem, falling back to lazy unmount if target is busy.
+pub async fn force_unmount(mountpoint: &Path) -> Result<()> {
+    let mp = mountpoint.to_string_lossy().into_owned();
+
+    // Try normal unmount first
+    let output = cmd::run_unchecked("umount", [&mp]).await?;
+    if output.success {
+        return Ok(());
+    }
+
+    // Only fall back to lazy unmount if the error is "target is busy"
+    if output.stderr.contains("busy") {
+        println!(
+            "Target is busy, trying lazy unmount for {}...",
+            mountpoint.display()
+        );
+        cmd::run("umount", ["-l", &mp])
+            .await
+            .wrap_err_with(|| format!("Failed to lazy unmount {}", mountpoint.display()))?;
+        return Ok(());
+    }
+
+    // For any other error, propagate it
+    Err(eyre::eyre!(
+        "Failed to unmount {}: {}",
+        mountpoint.display(),
+        output.stderr.trim()
+    ))
+}
+
 /// Check if a path is currently a mountpoint
 ///
 /// Parses /proc/mounts to determine if the path is mounted.

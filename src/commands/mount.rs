@@ -3,9 +3,9 @@
 //
 // Pre-checks:
 //   1. App state must exist
-//   2. RAM disk must be adequately sized
-//   3. Spot-check volume superblocks match expected state
-//   4. Must not already be mounted (fool-proof check)
+//   2. Stale state from crash/cancelled job is automatically cleaned up
+//   3. RAM disk must be adequately sized
+//   4. Spot-check volume superblocks match expected state
 //
 // Operation:
 //   1. Zero the RAM disk
@@ -16,45 +16,47 @@
 // After this, all writes to the mounted filesystem are tracked by dm-era.
 // Mount point and options come from the app state (configured during init).
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 
 use crate::error::{not_initialized, volume_mismatch};
 use crate::{dmera, env, io, mount, ramdisk, state, volume};
-use eyre::eyre;
 
 /// Run the mount command
 pub async fn run() -> Result<()> {
     env::require_root()?;
 
-    let app_state = state::load()?.ok_or_else(not_initialized)?;
+    let mut app_state = state::load()?.ok_or_else(not_initialized)?;
 
-    if app_state.is_mounted {
-        return Err(crate::error::already_mounted());
-    }
-
-    // Check if mountpoint is already in use (ground-truth check for crash recovery)
-    if mount::is_mounted(&app_state.mount_point)? {
-        return Err(eyre!(
-            "Mountpoint {} is already in use.\n\
-             State says not mounted, but filesystem is mounted. This may indicate a crash.\n\
-             Manually unmount with: sudo umount {}",
-            app_state.mount_point.display(),
-            app_state.mount_point.display()
-        ));
-    }
-
-    // Check that dmsetup is available
+    // Check that dmsetup is available (needed for cleanup and mount)
     dmera::check_dmsetup().await?;
 
-    // Check if dm-era device already exists (stale state from crash?)
-    if dmera::exists(dmera::DM_ERA_NAME).await? {
-        return Err(eyre::eyre!(
-            "dm-era device '{}' already exists.\n\
-             This may indicate a previous crash. Run 'schelk recover' or manually remove with:\n  \
-             sudo dmsetup remove {}",
-            dmera::DM_ERA_NAME,
-            dmera::DM_ERA_NAME
-        ));
+    // Clean up stale state from a previous crash or cancelled job
+    if app_state.is_mounted
+        || mount::is_mounted(&app_state.mount_point)?
+        || dmera::exists(dmera::DM_ERA_NAME).await?
+    {
+        println!("Detected stale mount state, cleaning up...");
+
+        // Unmount filesystem if still mounted
+        if mount::is_mounted(&app_state.mount_point)? {
+            println!("Unmounting stale {}...", app_state.mount_point.display());
+            mount::force_unmount(&app_state.mount_point).await?;
+        }
+
+        // Remove dm-era device if it still exists
+        if dmera::exists(dmera::DM_ERA_NAME).await? {
+            println!("Removing stale dm-era device '{}'...", dmera::DM_ERA_NAME);
+            dmera::remove(dmera::DM_ERA_NAME)
+                .await
+                .wrap_err("Failed to remove stale dm-era device")?;
+        }
+
+        // Reset state
+        app_state.is_mounted = false;
+        app_state.current_era = None;
+        state::save(&app_state)?;
+        println!("Cleanup complete, proceeding with mount.");
+        println!();
     }
 
     // Step 1: Validate RAM disk is adequately sized
@@ -127,7 +129,6 @@ pub async fn run() -> Result<()> {
     }
 
     // Step 7: Update app state to mark as mounted
-    let mut app_state = app_state;
     app_state.is_mounted = true;
     app_state.current_era = Some(1);
     state::save(&app_state)?;
