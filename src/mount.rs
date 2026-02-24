@@ -4,7 +4,9 @@
 use std::fs;
 use std::path::Path;
 
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
+use nix::errno::Errno;
+use nix::mount::MntFlags;
 
 use crate::cmd;
 
@@ -54,44 +56,27 @@ pub async fn mount(
 ///
 /// If unmount fails because the volume is busy, the error message lists the
 /// processes that are still using the mountpoint (PID + command line).
-pub async fn unmount(mountpoint: &Path) -> Result<()> {
-    let output = cmd::run_unchecked("umount", [&mountpoint.to_string_lossy().into_owned()])
-        .await
-        .wrap_err_with(|| format!("Failed to unmount {}", mountpoint.display()))?;
-
-    if output.success {
-        return Ok(());
-    }
-
-    let stderr = output.stderr.trim();
-    if stderr.contains("busy") {
-        let procs = find_processes_using(mountpoint);
-        let mut msg = format!(
-            "Failed to unmount {}: target is busy\n",
-            mountpoint.display()
-        );
-        if procs.is_empty() {
-            msg.push_str("  (could not identify blocking processes)");
-        } else {
-            msg.push_str("Processes still using the mount:\n");
-            for (pid, cmdline) in &procs {
-                msg.push_str(&format!("  PID={pid} {cmdline:?}\n"));
+pub fn unmount(mountpoint: &Path) -> Result<()> {
+    match nix::mount::umount2(mountpoint, MntFlags::empty()) {
+        Ok(()) => Ok(()),
+        Err(Errno::EBUSY) => {
+            let procs = find_processes_using(mountpoint);
+            let mut msg = format!(
+                "Failed to unmount {}: target is busy\n",
+                mountpoint.display()
+            );
+            if procs.is_empty() {
+                msg.push_str("  (could not identify blocking processes)");
+            } else {
+                msg.push_str("Processes still using the mount:\n");
+                for (pid, cmdline) in &procs {
+                    msg.push_str(&format!("  PID={pid} {cmdline:?}\n"));
+                }
             }
+            Err(eyre!(msg))
         }
-        return Err(eyre::eyre!(msg));
+        Err(e) => Err(eyre!(e)).wrap_err(format!("Failed to unmount {}", mountpoint.display())),
     }
-
-    // Non-busy failure — preserve original error
-    let msg = if stderr.is_empty() {
-        format!(
-            "Failed to unmount {}: exit code {:?}",
-            mountpoint.display(),
-            output.code
-        )
-    } else {
-        format!("Failed to unmount {}: {}", mountpoint.display(), stderr)
-    };
-    Err(eyre::eyre!(msg))
 }
 
 /// Scan /proc to find processes with open files or cwd under `mountpoint`.
@@ -176,4 +161,68 @@ pub fn is_mounted(mountpoint: &Path) -> Result<bool> {
     }
 
     Ok(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    /// Mount a tmpfs at `mountpoint` using nix. Requires CAP_SYS_ADMIN.
+    fn mount_tmpfs(mountpoint: &Path) {
+        nix::mount::mount(
+            Some("tmpfs"),
+            mountpoint,
+            Some("tmpfs"),
+            nix::mount::MsFlags::empty(),
+            None::<&str>,
+        )
+        .expect("mount tmpfs failed (need root + CAP_SYS_ADMIN)");
+    }
+
+    /// These tests require root with CAP_SYS_ADMIN (mount/unmount privileges).
+    /// Run with: cargo test -- --ignored
+    #[test]
+    #[ignore = "requires root + CAP_SYS_ADMIN"]
+    fn unmount_succeeds_when_not_busy() {
+        let dir = TempDir::new().unwrap();
+        mount_tmpfs(dir.path());
+
+        // Nothing holds the mount open — unmount should succeed.
+        unmount(dir.path()).expect("unmount should succeed when not busy");
+
+        assert!(!is_mounted(dir.path()).unwrap());
+    }
+
+    #[test]
+    #[ignore = "requires root + CAP_SYS_ADMIN"]
+    fn unmount_reports_blocking_process_when_busy() {
+        let dir = TempDir::new().unwrap();
+        mount_tmpfs(dir.path());
+
+        // Spawn a process whose cwd is inside the mount to keep it busy.
+        let mut blocker = Command::new("sleep")
+            .arg("60")
+            .current_dir(dir.path())
+            .spawn()
+            .expect("failed to spawn blocker");
+
+        let err = unmount(dir.path()).expect_err("unmount should fail with EBUSY");
+        let msg = format!("{err}");
+        assert!(msg.contains("target is busy"), "unexpected error: {msg}");
+        assert!(
+            msg.contains(&format!("PID={}", blocker.id())),
+            "error should mention the blocker PID: {msg}"
+        );
+        assert!(
+            msg.contains("sleep"),
+            "error should mention the command: {msg}"
+        );
+
+        blocker.kill().ok();
+        blocker.wait().ok();
+        // Clean up: unmount now that blocker is gone.
+        unmount(dir.path()).ok();
+    }
 }
