@@ -56,7 +56,14 @@ pub async fn mount(
 ///
 /// If unmount fails because the volume is busy, the error message lists the
 /// processes that are still using the mountpoint (PID + command line).
-pub fn unmount(mountpoint: &Path) -> Result<()> {
+pub async fn unmount(mountpoint: &Path) -> Result<()> {
+    let mountpoint = mountpoint.to_path_buf();
+    tokio::task::spawn_blocking(move || unmount_blocking(&mountpoint))
+        .await
+        .wrap_err("unmount task panicked")?
+}
+
+fn unmount_blocking(mountpoint: &Path) -> Result<()> {
     match nix::mount::umount2(mountpoint, MntFlags::empty()) {
         Ok(()) => Ok(()),
         Err(Errno::EBUSY) => {
@@ -183,21 +190,23 @@ mod tests {
 
     /// These tests require root with CAP_SYS_ADMIN (mount/unmount privileges).
     /// Run with: cargo test -- --ignored
-    #[test]
+    #[tokio::test]
     #[ignore = "requires root + CAP_SYS_ADMIN"]
-    fn unmount_succeeds_when_not_busy() {
+    async fn unmount_succeeds_when_not_busy() {
         let dir = TempDir::new().unwrap();
         mount_tmpfs(dir.path());
 
         // Nothing holds the mount open — unmount should succeed.
-        unmount(dir.path()).expect("unmount should succeed when not busy");
+        unmount(dir.path())
+            .await
+            .expect("unmount should succeed when not busy");
 
         assert!(!is_mounted(dir.path()).unwrap());
     }
 
-    #[test]
+    #[tokio::test]
     #[ignore = "requires root + CAP_SYS_ADMIN"]
-    fn unmount_reports_blocking_process_when_busy() {
+    async fn unmount_reports_blocking_process_when_busy() {
         let dir = TempDir::new().unwrap();
         mount_tmpfs(dir.path());
 
@@ -208,7 +217,9 @@ mod tests {
             .spawn()
             .expect("failed to spawn blocker");
 
-        let err = unmount(dir.path()).expect_err("unmount should fail with EBUSY");
+        let err = unmount(dir.path())
+            .await
+            .expect_err("unmount should fail with EBUSY");
         let msg = format!("{err}");
         assert!(msg.contains("target is busy"), "unexpected error: {msg}");
         assert!(
@@ -223,6 +234,6 @@ mod tests {
         blocker.kill().ok();
         blocker.wait().ok();
         // Clean up: unmount now that blocker is gone.
-        unmount(dir.path()).ok();
+        unmount(dir.path()).await.ok();
     }
 }

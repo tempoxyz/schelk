@@ -59,7 +59,9 @@ pub async fn run() -> Result<()> {
     // Step 1: Unmount the filesystem (if actually mounted)
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
-        mount::unmount(&app_state.mount_point).wrap_err("Failed to unmount filesystem")?;
+        mount::unmount(&app_state.mount_point)
+            .await
+            .wrap_err("Failed to unmount filesystem")?;
     } else {
         println!(
             "Mountpoint {} not actually mounted, skipping unmount...",
