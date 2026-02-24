@@ -65,7 +65,7 @@ fn calculate_required_sizes(volume_size: u64, granularity: u64) -> (u64, u64) {
 
     // Era array blocks: ceil(nr_blocks / 1018) where 1018 = entries per 4K block
     // Each 4K metadata block holds (4096 - 24 header) / 4 bytes = 1018 u32 values
-    let era_array_blocks = nr_blocks.div_ceil(1018);
+    let era_array_blocks = (nr_blocks + 1017) / 1018;
 
     // B-tree overhead: ~4% of era array blocks for internal nodes
     let btree_overhead_blocks = (era_array_blocks * 4) / 100;

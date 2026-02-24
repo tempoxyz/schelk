@@ -34,7 +34,6 @@ use crate::state::{self, AppState};
 use crate::volume;
 
 /// Run the init command
-#[allow(clippy::too_many_arguments)]
 pub async fn run(
     virgin: PathBuf,
     scratch: PathBuf,

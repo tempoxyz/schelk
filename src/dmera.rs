@@ -34,15 +34,15 @@ pub async fn check_era_invalidate() -> Result<()> {
 
     // Check version and if pre-1.0 then warn because it's not written in Rust and as such is not
     // blazingly fast.
-    if let Some(version) = get_era_invalidate_version()
-        && is_version_below_1_0(&version)
-    {
-        eprintln!(
-            "Warning: era_invalidate version {} is slow. \
-             For better performance, compile version 1.0+ from \
-             https://github.com/device-mapper-utils/thin-provisioning-tools",
-            version
-        );
+    if let Some(version) = get_era_invalidate_version() {
+        if is_version_below_1_0(&version) {
+            eprintln!(
+                "Warning: era_invalidate version {} is slow. \
+                 For better performance, compile version 1.0+ from \
+                 https://github.com/device-mapper-utils/thin-provisioning-tools",
+                version
+            );
+        }
     }
 
     Ok(())
