@@ -51,12 +51,106 @@ pub async fn mount(
 ///
 /// This flushes all pending writes and prevents further modifications.
 /// Important to call before taking dm-era snapshot.
+///
+/// If unmount fails because the volume is busy, the error message lists the
+/// processes that are still using the mountpoint (PID + command line).
 pub async fn unmount(mountpoint: &Path) -> Result<()> {
-    cmd::run("umount", [&mountpoint.to_string_lossy().into_owned()])
+    let output = cmd::run_unchecked("umount", [&mountpoint.to_string_lossy().into_owned()])
         .await
         .wrap_err_with(|| format!("Failed to unmount {}", mountpoint.display()))?;
 
-    Ok(())
+    if output.success {
+        return Ok(());
+    }
+
+    let stderr = output.stderr.trim();
+    if stderr.contains("busy") {
+        let procs = find_processes_using(mountpoint);
+        let mut msg = format!(
+            "Failed to unmount {}: target is busy\n",
+            mountpoint.display()
+        );
+        if procs.is_empty() {
+            msg.push_str("  (could not identify blocking processes)");
+        } else {
+            msg.push_str("Processes still using the mount:\n");
+            for (pid, cmdline) in &procs {
+                msg.push_str(&format!("  PID={pid} {cmdline:?}\n"));
+            }
+        }
+        return Err(eyre::eyre!(msg));
+    }
+
+    // Non-busy failure — preserve original error
+    let msg = if stderr.is_empty() {
+        format!(
+            "Failed to unmount {}: exit code {:?}",
+            mountpoint.display(),
+            output.code
+        )
+    } else {
+        format!("Failed to unmount {}: {}", mountpoint.display(), stderr)
+    };
+    Err(eyre::eyre!(msg))
+}
+
+/// Scan /proc to find processes with open files or cwd under `mountpoint`.
+///
+/// Returns a list of (pid, cmdline) pairs. Best-effort: silently skips
+/// entries that are unreadable (e.g. kernel threads, races with exiting
+/// processes).
+fn find_processes_using(mountpoint: &Path) -> Vec<(u32, String)> {
+    let mountpoint = mountpoint
+        .canonicalize()
+        .unwrap_or_else(|_| mountpoint.to_path_buf());
+
+    let mut results: Vec<(u32, String)> = Vec::new();
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return results;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else {
+            continue;
+        };
+
+        let proc_dir = entry.path();
+
+        if is_under(&proc_dir.join("cwd"), &mountpoint)
+            || is_under(&proc_dir.join("root"), &mountpoint)
+            || has_fd_under(&proc_dir.join("fd"), &mountpoint)
+        {
+            let cmdline = fs::read_to_string(proc_dir.join("cmdline"))
+                .unwrap_or_default()
+                .replace('\0', " ")
+                .trim()
+                .to_string();
+            results.push((pid, cmdline));
+        }
+    }
+
+    results
+}
+
+/// Check whether a symlink (e.g. /proc/<pid>/cwd) resolves to a path under `mountpoint`.
+fn is_under(link: &Path, mountpoint: &Path) -> bool {
+    fs::read_link(link)
+        .map(|target| target.starts_with(mountpoint))
+        .unwrap_or(false)
+}
+
+/// Check whether any fd in /proc/<pid>/fd/ points under `mountpoint`.
+fn has_fd_under(fd_dir: &Path, mountpoint: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(fd_dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        if is_under(&entry.path(), mountpoint) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Check if a path is currently a mountpoint
