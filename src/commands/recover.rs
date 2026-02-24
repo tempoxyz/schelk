@@ -26,7 +26,7 @@ use crate::error::not_initialized;
 use crate::{dmera, env, mount, state, volume};
 
 /// Run the recover command
-pub async fn run() -> Result<()> {
+pub async fn run(kill: bool) -> Result<()> {
     env::require_root()?;
 
     let app_state = state::load()?.ok_or_else(not_initialized)?;
@@ -59,7 +59,7 @@ pub async fn run() -> Result<()> {
     // Step 1: Unmount the filesystem (if actually mounted)
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
-        mount::unmount(&app_state.mount_point)
+        mount::unmount(&app_state.mount_point, kill)
             .await
             .wrap_err("Failed to unmount filesystem")?;
     } else {
