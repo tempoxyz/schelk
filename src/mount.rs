@@ -7,6 +7,8 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use nix::errno::Errno;
 use nix::mount::MntFlags;
+use nix::sys::signal::{self, Signal};
+use nix::unistd::Pid;
 
 use crate::cmd;
 
@@ -56,16 +58,42 @@ pub async fn mount(
 ///
 /// If unmount fails because the volume is busy, the error message lists the
 /// processes that are still using the mountpoint (PID + command line).
-pub async fn unmount(mountpoint: &Path) -> Result<()> {
+///
+/// When `kill` is true and unmount fails with EBUSY, sends SIGKILL to all
+/// blocking processes and retries the unmount.
+pub async fn unmount(mountpoint: &Path, kill: bool) -> Result<()> {
     let mountpoint = mountpoint.to_path_buf();
-    tokio::task::spawn_blocking(move || unmount_blocking(&mountpoint))
+    tokio::task::spawn_blocking(move || unmount_blocking(&mountpoint, kill))
         .await
         .wrap_err("unmount task panicked")?
 }
 
-fn unmount_blocking(mountpoint: &Path) -> Result<()> {
+fn unmount_blocking(mountpoint: &Path, kill: bool) -> Result<()> {
     match nix::mount::umount2(mountpoint, MntFlags::empty()) {
         Ok(()) => Ok(()),
+        Err(Errno::EBUSY) if kill => {
+            let procs = find_processes_using(mountpoint);
+            if procs.is_empty() {
+                return Err(eyre!(
+                    "Failed to unmount {}: target is busy\n  \
+                     (could not identify blocking processes)",
+                    mountpoint.display()
+                ));
+            }
+            for (pid, cmdline) in &procs {
+                eprintln!("  Killing PID={pid} {cmdline:?}");
+                let _ = signal::kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
+            }
+            // Wait briefly for processes to exit
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            // Retry unmount
+            nix::mount::umount2(mountpoint, MntFlags::empty())
+                .map_err(|e| eyre!(e))
+                .wrap_err(format!(
+                    "Failed to unmount {} after killing blocking processes",
+                    mountpoint.display()
+                ))
+        }
         Err(Errno::EBUSY) => {
             let procs = find_processes_using(mountpoint);
             let mut msg = format!(
@@ -197,7 +225,7 @@ mod tests {
         mount_tmpfs(dir.path());
 
         // Nothing holds the mount open — unmount should succeed.
-        unmount(dir.path())
+        unmount(dir.path(), false)
             .await
             .expect("unmount should succeed when not busy");
 
@@ -217,7 +245,7 @@ mod tests {
             .spawn()
             .expect("failed to spawn blocker");
 
-        let err = unmount(dir.path())
+        let err = unmount(dir.path(), false)
             .await
             .expect_err("unmount should fail with EBUSY");
         let msg = format!("{err}");
@@ -234,6 +262,39 @@ mod tests {
         blocker.kill().ok();
         blocker.wait().ok();
         // Clean up: unmount now that blocker is gone.
-        unmount(dir.path()).await.ok();
+        unmount(dir.path(), false).await.ok();
+    }
+
+    #[tokio::test]
+    #[ignore = "requires root + CAP_SYS_ADMIN"]
+    async fn unmount_kill_terminates_blocking_process() {
+        let dir = TempDir::new().unwrap();
+        mount_tmpfs(dir.path());
+
+        // Spawn a process whose cwd is inside the mount to keep it busy.
+        let mut blocker = Command::new("sleep")
+            .arg("60")
+            .current_dir(dir.path())
+            .spawn()
+            .expect("failed to spawn blocker");
+
+        let pid = blocker.id();
+
+        // With --kill, unmount should succeed by killing the blocker.
+        unmount(dir.path(), true)
+            .await
+            .expect("unmount --kill should succeed");
+
+        assert!(!is_mounted(dir.path()).unwrap());
+
+        // Reap the zombie.
+        blocker.wait().ok();
+
+        // The blocker process should be gone.
+        let proc_path = format!("/proc/{pid}");
+        assert!(
+            !Path::new(&proc_path).exists(),
+            "blocker process PID={pid} should have been killed"
+        );
     }
 }

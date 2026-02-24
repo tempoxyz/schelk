@@ -66,10 +66,18 @@ pub enum Command {
     Mount,
 
     /// Recover scratch volume from virgin (surgical restore)
-    Recover,
+    Recover {
+        /// Kill processes blocking unmount instead of failing
+        #[arg(short = 'k', long = "kill")]
+        kill: bool,
+    },
 
     /// Promote scratch state to virgin (update baseline)
-    Promote,
+    Promote {
+        /// Kill processes blocking unmount instead of failing
+        #[arg(short = 'k', long = "kill")]
+        kill: bool,
+    },
 
     /// Show current status (default command)
     Status,

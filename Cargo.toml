@@ -17,7 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 sha2 = "0.10"
-nix = { version = "0.30", features = ["fs", "mount", "user"] }
+nix = { version = "0.30", features = ["fs", "mount", "signal", "user"] }
 quick-xml = "0.38"
 
 [dev-dependencies]

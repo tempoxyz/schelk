@@ -30,8 +30,11 @@ use crate::confirm;
 use crate::error::not_initialized;
 use crate::{dmera, env, mount, state, volume};
 
-/// Run the promote command
-pub async fn run(yes: bool) -> Result<()> {
+/// Run the promote command.
+///
+/// If `kill` is true, processes blocking the unmount are sent SIGKILL
+/// and the unmount is retried.
+pub async fn run(yes: bool, kill: bool) -> Result<()> {
     env::require_root()?;
 
     let app_state = state::load()?.ok_or_else(not_initialized)?;
@@ -69,7 +72,7 @@ pub async fn run(yes: bool) -> Result<()> {
     // Step 1: Unmount the filesystem (if actually mounted)
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
-        mount::unmount(&app_state.mount_point)
+        mount::unmount(&app_state.mount_point, kill)
             .await
             .wrap_err("Failed to unmount filesystem")?;
     } else {
