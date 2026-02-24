@@ -30,7 +30,10 @@ use crate::confirm;
 use crate::error::not_initialized;
 use crate::{dmera, env, mount, state, volume};
 
-/// Run the promote command
+/// Run the promote command.
+///
+/// If `kill` is true, processes blocking the unmount are sent SIGKILL
+/// and the unmount is retried.
 pub async fn run(yes: bool, kill: bool) -> Result<()> {
     env::require_root()?;
 

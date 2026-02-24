@@ -25,7 +25,10 @@ use eyre::{Result, WrapErr, eyre};
 use crate::error::not_initialized;
 use crate::{dmera, env, mount, state, volume};
 
-/// Run the recover command
+/// Run the recover command.
+///
+/// If `kill` is true, processes blocking the unmount are sent SIGKILL
+/// and the unmount is retried.
 pub async fn run(kill: bool) -> Result<()> {
     env::require_root()?;
 
@@ -56,7 +59,8 @@ pub async fn run(kill: bool) -> Result<()> {
     println!("  Scratch: {}", app_state.scratch.display());
     println!();
 
-    // Step 1: Unmount the filesystem (if actually mounted)
+    // Step 1: Unmount the filesystem (if actually mounted).
+    // When --kill is set, any processes blocking the mount are killed first.
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
         mount::unmount(&app_state.mount_point, kill)
