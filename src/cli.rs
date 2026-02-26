@@ -72,7 +72,7 @@ pub enum Command {
         kill: bool,
     },
 
-    /// DESTRUCTIVE: Overwrite virgin volume with current scratch state.
+    /// Overwrite virgin volume with current scratch state (destructive).
     ///
     /// Permanently replaces the virgin (golden image) with the current scratch
     /// contents. The old virgin data is lost and cannot be recovered.
