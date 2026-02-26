@@ -59,7 +59,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
         ));
     }
 
-    println!("⚠️  DESTRUCTIVE: Promoting scratch to virgin");
+    println!("DESTRUCTIVE: Promoting scratch to virgin");
     println!("  Virgin:  {}", app_state.virgin.display());
     println!("  Scratch: {}", app_state.scratch.display());
     println!();
