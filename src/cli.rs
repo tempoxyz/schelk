@@ -72,7 +72,11 @@ pub enum Command {
         kill: bool,
     },
 
-    /// Promote scratch state to virgin (update baseline)
+    /// ⚠️  DESTRUCTIVE: Overwrite virgin volume with current scratch state.
+    ///
+    /// Permanently replaces the virgin (golden image) with the current scratch
+    /// contents. The old virgin data is lost and cannot be recovered.
+    /// Only use this when the scratch state should become the new baseline.
     Promote {
         /// Kill processes blocking unmount instead of failing
         #[arg(short = 'k', long = "kill")]
