@@ -59,13 +59,14 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
         ));
     }
 
-    println!("Promoting scratch to virgin (updating baseline)");
+    println!("Promoting scratch to virgin (destructive)");
     println!("  Virgin:  {}", app_state.virgin.display());
     println!("  Scratch: {}", app_state.scratch.display());
     println!();
-    println!("WARNING: This will permanently modify the virgin volume.");
+    println!("WARNING: This will permanently overwrite the virgin volume with scratch.");
+    println!("         The old virgin data will be LOST and cannot be recovered.");
 
-    confirm::require("Proceed with promote?", yes)?;
+    confirm::require("Permanently overwrite virgin volume?", yes)?;
 
     println!();
 
