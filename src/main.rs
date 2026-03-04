@@ -73,7 +73,6 @@ async fn main() -> eyre::Result<()> {
             scratch,
             ramdisk,
             mount_point,
-            fstype,
             mount_options,
             granularity,
         }) => {
@@ -82,7 +81,6 @@ async fn main() -> eyre::Result<()> {
                 scratch,
                 ramdisk,
                 mount_point,
-                fstype,
                 mount_options,
                 granularity,
                 cli.yes,

@@ -1,5 +1,5 @@
 // Volume operations
-// Handles block device validation and superblock hashing
+// Handles block device validation, superblock hashing, and filesystem creation
 
 use std::fs::File;
 use std::os::unix::fs::FileTypeExt;
@@ -8,6 +8,7 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use sha2::{Digest, Sha256};
 
+use crate::cmd;
 use crate::io;
 
 // Re-export BlockRange for backward compatibility
@@ -66,4 +67,59 @@ where
     F: FnMut(u64, u64),
 {
     io::copy_blocks(src, dst, blocks, granularity, progress)
+}
+
+/// Create a fresh ext4 filesystem on a block device.
+///
+/// Runs `mkfs.ext4` with:
+/// - 4096-byte block size
+/// - Journaling enabled (ext4 default)
+/// - Label "schelk"
+/// - `-F` to skip confirmation (we handle that ourselves)
+pub async fn mkfs_ext4(path: &Path) -> Result<()> {
+    cmd::require("mkfs.ext4", "e2fsprogs (apt install e2fsprogs)").await?;
+
+    let path_str = path.to_string_lossy().into_owned();
+
+    cmd::run(
+        "mkfs.ext4",
+        &[
+            "-F", // force — don't ask, we already confirmed
+            "-b", "4096", // 4K block size
+            "-L", "schelk", &path_str,
+        ],
+    )
+    .await
+    .wrap_err_with(|| format!("Failed to create ext4 filesystem on {}", path.display()))?;
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Seek, SeekFrom};
+
+    #[tokio::test]
+    async fn mkfs_ext4_on_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let img = dir.path().join("test.img");
+
+        // 32 MB — minimum viable size for ext4 with journal
+        let size: u64 = 32 * 1024 * 1024;
+        {
+            let f = File::create(&img).unwrap();
+            f.set_len(size).unwrap();
+        }
+
+        mkfs_ext4(&img).await.expect("mkfs should succeed");
+
+        // Verify the superblock looks like ext4 (magic number at offset 0x438)
+        let mut f = File::open(&img).unwrap();
+        let mut magic = [0u8; 2];
+        f.seek(SeekFrom::Start(0x438)).unwrap();
+        f.read_exact(&mut magic).unwrap();
+        // ext4 superblock magic is 0xEF53 (little-endian)
+        assert_eq!(magic, [0x53, 0xEF], "ext4 superblock magic not found");
+    }
 }

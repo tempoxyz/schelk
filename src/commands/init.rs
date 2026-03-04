@@ -1,5 +1,9 @@
 // Command: init
-// Initializes schelk configuration with volume paths and settings
+// Initializes schelk configuration with volume paths and settings.
+//
+// This command is DESTRUCTIVE: it creates fresh ext4 filesystems on both the
+// virgin and scratch volumes, then copies virgin to scratch. All existing data
+// on both volumes will be lost.
 //
 // If app state already exists, offers to reinitialize.
 //
@@ -15,15 +19,17 @@
 //   1. Validate virgin volume is a valid block device
 //   2. Validate scratch volume is a valid block device
 //   3. Validate RAM disk is sufficiently sized for volume size / granularity
-//   4. Check dmsetup availability and version
-//   5. Check Linux version compatibility
 //
 // On success:
-//   - Computes and stores superblock hashes for both volumes
-//   - Saves app state to XDG directory
+//   - Creates ext4 filesystems on both volumes (4K block size, journaling)
+//   - Copies virgin to scratch so both are identical
+//   - Computes and stores superblock hash
+//   - Saves app state
 //   - Warns user that schelk now controls both volumes
 
+use std::io::{self, Write};
 use std::path::PathBuf;
+use std::time::Instant;
 
 use eyre::{Result, eyre};
 
@@ -39,7 +45,6 @@ pub async fn run(
     scratch: PathBuf,
     ramdisk: PathBuf,
     mount_point: PathBuf,
-    fstype: String,
     mount_options: Option<String>,
     granularity: u64,
     yes: bool,
@@ -62,6 +67,7 @@ pub async fn run(
             yes,
         )?;
     }
+
     // Validate volumes are valid block devices
     volume::validate_block_device(&virgin)?;
     volume::validate_block_device(&scratch)?;
@@ -82,8 +88,51 @@ pub async fn run(
     }
 
     // Validate RAM disk is accessible and sufficiently sized.
-    // Note that it may actually be not a RAM disk but I guess it's fine. We can add it later.
     ramdisk::validate_size(&ramdisk, scratch_size, granularity)?;
+
+    // Warn that this is destructive
+    println!("This will create fresh ext4 filesystems on BOTH volumes.");
+    println!("All existing data will be destroyed.");
+    println!();
+    println!("  Virgin:  {} ({} bytes)", virgin.display(), virgin_size);
+    println!("  Scratch: {} ({} bytes)", scratch.display(), scratch_size);
+    println!("  Block size: 4096 bytes (ext4)");
+    println!("  Journaling: enabled");
+    println!();
+
+    confirm::require("Proceed with initialization?", yes)?;
+
+    // Create ext4 filesystem on virgin volume
+    println!();
+    println!("Creating ext4 filesystem on virgin volume...");
+    volume::mkfs_ext4(&virgin).await?;
+    println!("  done.");
+
+    // Copy virgin to scratch so both volumes are identical
+    println!("Copying virgin to scratch...");
+    let start = Instant::now();
+    let mut last_print = Instant::now();
+
+    let copied = volume::full_copy(&virgin, &scratch, |copied, total| {
+        if last_print.elapsed().as_millis() >= 100 {
+            let percent = (copied as f64 / total as f64) * 100.0;
+            let mb_copied = copied / (1024 * 1024);
+            let mb_total = total / (1024 * 1024);
+            print!("\r  {} / {} MB ({:.1}%)    ", mb_copied, mb_total, percent);
+            let _ = io::stdout().flush();
+            last_print = Instant::now();
+        }
+    })?;
+
+    let elapsed = start.elapsed();
+    let mb_copied = copied / (1024 * 1024);
+    let speed = mb_copied as f64 / elapsed.as_secs_f64();
+    println!(
+        "\r  {} MB copied in {:.1}s ({:.1} MB/s)    ",
+        mb_copied,
+        elapsed.as_secs_f64(),
+        speed
+    );
 
     // Compute virgin superblock hash for integrity checks
     let virgin_superblock_hash = volume::hash_superblock(&virgin)?;
@@ -93,7 +142,7 @@ pub async fn run(
         scratch,
         ramdisk,
         mount_point,
-        fstype,
+        fstype: "ext4".to_string(),
         mount_options,
         granularity,
         virgin_superblock_hash,
@@ -103,6 +152,7 @@ pub async fn run(
 
     state::save(&app_state)?;
 
+    println!();
     println!("schelk initialized successfully.");
     println!();
     println!("WARNING: schelk now expects to control both volumes:");

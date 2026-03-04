@@ -27,7 +27,12 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize schelk with volume configuration
+    /// Initialize schelk with volume configuration.
+    ///
+    /// Creates fresh ext4 filesystems (4K blocks, journaling) on both the
+    /// virgin and scratch volumes and copies virgin to scratch. This is a
+    /// DESTRUCTIVE operation — all existing data on both volumes will be lost.
+    /// Requires confirmation via -y or an interactive prompt.
     Init {
         /// Path to virgin volume (read-only golden image)
         #[arg(long)]
@@ -44,10 +49,6 @@ pub enum Command {
         /// Mount point for the scratch volume
         #[arg(long)]
         mount_point: PathBuf,
-
-        /// Filesystem type (e.g., "ext4", "xfs")
-        #[arg(long)]
-        fstype: String,
 
         /// Mount options (e.g., "noatime,nodiratime")
         #[arg(long)]
