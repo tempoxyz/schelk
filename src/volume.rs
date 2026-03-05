@@ -8,7 +8,6 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use sha2::{Digest, Sha256};
 
-use crate::cmd;
 use crate::io;
 
 // Re-export BlockRange for backward compatibility
@@ -69,28 +68,40 @@ where
     io::copy_blocks(src, dst, blocks, granularity, progress)
 }
 
-/// Create a fresh ext4 filesystem on a block device.
+/// Create a fresh ext4 filesystem on a block device or file.
 ///
-/// Runs `mkfs.ext4` with:
+/// Uses the `ext4-mkfs` crate (pure Rust, no system tools required) with:
 /// - 4096-byte block size
-/// - Journaling enabled (ext4 default)
+/// - Journaling enabled
 /// - Label "schelk"
-/// - `-F` to skip confirmation (we handle that ourselves)
-pub async fn mkfs_ext4(path: &Path) -> Result<()> {
-    cmd::require("mkfs.ext4", "e2fsprogs (apt install e2fsprogs)").await?;
+/// - Zeroed UUID for determinism
+pub fn mkfs_ext4(path: &Path) -> Result<()> {
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+        .wrap_err_with(|| format!("Cannot open {} for formatting", path.display()))?;
 
-    let path_str = path.to_string_lossy().into_owned();
+    let total_size = if file.metadata()?.file_type().is_block_device() {
+        get_size(path)?
+    } else {
+        file.metadata()?.len()
+    };
 
-    cmd::run(
-        "mkfs.ext4",
-        &[
-            "-F", // force — don't ask, we already confirmed
-            "-b", "4096", // 4K block size
-            "-L", "schelk", &path_str,
-        ],
-    )
-    .await
-    .wrap_err_with(|| format!("Failed to create ext4 filesystem on {}", path.display()))?;
+    let config = ext4_mkfs::MkfsConfig {
+        fs_type: ext4_mkfs::FsType::Ext4,
+        block_size: 4096,
+        label: Some("schelk".to_string()),
+        uuid: Some([0u8; 16]),
+        journal: true,
+        inode_size: 256,
+    };
+
+    let device = ext4_mkfs::IoBlockDevice::new(file, 4096, total_size);
+
+    ext4_mkfs::mkfs(device, config)
+        .map_err(|e| eyre!("{}", e))
+        .wrap_err_with(|| format!("Failed to create ext4 filesystem on {}", path.display()))?;
 
     Ok(())
 }
@@ -100,8 +111,8 @@ mod tests {
     use super::*;
     use std::io::{Read, Seek, SeekFrom};
 
-    #[tokio::test]
-    async fn mkfs_ext4_on_file() {
+    #[test]
+    fn mkfs_ext4_on_file() {
         let dir = tempfile::tempdir().unwrap();
         let img = dir.path().join("test.img");
 
@@ -112,7 +123,7 @@ mod tests {
             f.set_len(size).unwrap();
         }
 
-        mkfs_ext4(&img).await.expect("mkfs should succeed");
+        mkfs_ext4(&img).expect("mkfs should succeed");
 
         // Verify the superblock looks like ext4 (magic number at offset 0x438)
         let mut f = File::open(&img).unwrap();

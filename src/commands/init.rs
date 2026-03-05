@@ -105,7 +105,7 @@ pub async fn run(
     // Create ext4 filesystem on virgin volume
     println!();
     println!("Creating ext4 filesystem on virgin volume...");
-    volume::mkfs_ext4(&virgin).await?;
+    volume::mkfs_ext4(&virgin)?;
     println!("  done.");
 
     // Copy virgin to scratch so both volumes are identical
