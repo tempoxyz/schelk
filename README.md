@@ -45,22 +45,35 @@ formula, but for 1.7 TiB drive at 4 KiB granularity, 4 GiB ramdisk is sufficient
 sudo modprobe brd rd_size=4194304
 ```
 
-The disks should have the same content at initialization time, eg. via dd
+Initialize schelk. There are two ways:
+
+**`init-new`** — Create fresh ext4 filesystems on both volumes from scratch. All existing data on
+both volumes will be lost.
 
 ```
-sudo dd if=/dev/nvme1n1 of=/dev/nvme2n1 bs=256M status=progress conv=fsync
+sudo schelk init-new \
+    --virgin /dev/nvme1n1 \
+    --scratch /dev/nvme2n1 \
+    --ramdisk /dev/ram0 \
+    --mount-point /schelk
 ```
 
-Once that's done you can run the initialization command.
+**`init-from`** — Adopt an existing, pre-populated virgin volume (e.g., one you've already loaded
+a database snapshot onto). The scratch volume will be overwritten with a full copy of the virgin.
 
 ```
-# Note: This tool requires superuser privileges.
-sudo schelk init \
+sudo schelk init-from \
     --virgin /dev/nvme1n1 \
     --scratch /dev/nvme2n1 \
     --ramdisk /dev/ram0 \
     --mount-point /schelk \
     --fstype ext4
+```
+
+If you've already prepared both volumes identically, use `--no-copy` to skip the full copy:
+
+```
+sudo schelk init-from ... --no-copy
 ```
 
 and then run the experiments.

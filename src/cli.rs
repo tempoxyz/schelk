@@ -1,5 +1,5 @@
 // CLI definition using clap
-// Defines subcommands: init, full-recover, mount, recover, status
+// Defines subcommands: init-new, init-from, full-recover, mount, recover, status
 // Global flags: -y (skip confirmation)
 //
 // Default behavior: If no subcommand is provided, runs 'status'
@@ -27,8 +27,37 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Initialize schelk with volume configuration
-    Init {
+    /// Create fresh ext4 filesystems on both volumes from scratch (destructive)
+    #[command(name = "init-new")]
+    InitNew {
+        /// Path to virgin volume (read-only golden image)
+        #[arg(long)]
+        virgin: PathBuf,
+
+        /// Path to scratch volume (writable working copy)
+        #[arg(long)]
+        scratch: PathBuf,
+
+        /// Path to RAM disk for dm-era metadata
+        #[arg(long)]
+        ramdisk: PathBuf,
+
+        /// Mount point for the scratch volume
+        #[arg(long)]
+        mount_point: PathBuf,
+
+        /// Mount options (e.g., "noatime,nodiratime")
+        #[arg(long)]
+        mount_options: Option<String>,
+
+        /// Block granularity in bytes
+        #[arg(long, default_value = "4096")]
+        granularity: u64,
+    },
+
+    /// Adopt an existing pre-populated virgin volume (destructive to scratch)
+    #[command(name = "init-from")]
+    InitFrom {
         /// Path to virgin volume (read-only golden image)
         #[arg(long)]
         virgin: PathBuf,
@@ -56,6 +85,10 @@ pub enum Command {
         /// Block granularity in bytes
         #[arg(long, default_value = "4096")]
         granularity: u64,
+
+        /// Skip copying virgin to scratch (you assert both volumes are already identical)
+        #[arg(long)]
+        no_copy: bool,
     },
 
     /// Copy virgin volume to scratch volume (full restore)
