@@ -92,6 +92,12 @@ Checks:
 
 Must be confirmed either by `-y` or an interactive prompt.
 
+**Pro mode (`--no-copy`):** Skips the full block copy from virgin to scratch. The user asserts that
+both volumes are already identical (e.g., they prepared them manually or intend to run `full-recover`
+themselves). schelk will still validate the volumes and save app state, but will not touch the 
+scratch volume. This is dangerous — if the volumes are not actually identical, subsequent recovers 
+will produce corrupt results.
+
 > 🦄 Future Feature: interactive wizard. Help the user setting up in an interactive way.
 
 Both commands should let the user know that schelk now expects to control both volumes. Mounting 
