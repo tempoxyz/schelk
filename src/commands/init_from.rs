@@ -23,6 +23,8 @@ use crate::ramdisk;
 use crate::state::{self, AppState};
 use crate::volume;
 
+use super::init_common;
+
 /// Run the init-from command
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -37,6 +39,9 @@ pub async fn run(
     yes: bool,
 ) -> Result<()> {
     env::require_root()?;
+
+    init_common::validate_granularity(granularity)?;
+    init_common::reject_same_device(&virgin, &scratch)?;
 
     // Check if already initialized.
     if let Some(existing) = state::load()? {
@@ -89,6 +94,12 @@ pub async fn run(
         println!();
 
         confirm::require("Proceed?", yes)?;
+
+        // Cheap sanity check: at least the superblocks should match
+        println!();
+        println!("Verifying superblocks match...");
+        init_common::verify_copy(&virgin, &scratch)?;
+        println!("  ok.");
     } else {
         println!("Adopting existing virgin volume.");
         println!("The scratch volume will be overwritten with a full copy of the virgin.");
@@ -125,6 +136,9 @@ pub async fn run(
             elapsed.as_secs_f64(),
             speed
         );
+
+        // Verify copy succeeded
+        init_common::verify_copy(&virgin, &scratch)?;
     }
 
     // Compute virgin superblock hash for integrity checks

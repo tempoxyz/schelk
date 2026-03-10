@@ -19,6 +19,8 @@ use crate::ramdisk;
 use crate::state::{self, AppState};
 use crate::volume;
 
+use super::init_common;
+
 /// Run the init-new command
 pub async fn run(
     virgin: PathBuf,
@@ -30,6 +32,9 @@ pub async fn run(
     yes: bool,
 ) -> Result<()> {
     env::require_root()?;
+
+    init_common::validate_granularity(granularity)?;
+    init_common::reject_same_device(&virgin, &scratch)?;
 
     // Check if already initialized.
     if let Some(existing) = state::load()? {
@@ -114,6 +119,9 @@ pub async fn run(
         elapsed.as_secs_f64(),
         speed
     );
+
+    // Verify copy succeeded
+    init_common::verify_copy(&virgin, &scratch)?;
 
     // Compute virgin superblock hash for integrity checks
     let virgin_superblock_hash = volume::hash_superblock(&virgin)?;
