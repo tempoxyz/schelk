@@ -21,18 +21,22 @@ There are many errors modes in this tool. We need to defend against that. The us
 
 ## Commands
 
-1. init
-2. full-recover
-3. mount
-4. recover
-5. promote
-6. status
+1. init-new
+2. init-from
+3. full-recover
+4. mount
+5. recover
+6. promote
+7. status
 
-### `init`
+### `init-new`
+
+Creates fresh ext4 filesystems on both volumes from scratch. This is a **destructive** operation —
+all existing data on both volumes will be lost.
 
 If the app state already exists, it offers if it should reinitialize.
 
-The initialization parameters:
+Parameters:
 
 - the virgin volume path (device or partition)
 - the scratch volume path (device or partition)
@@ -40,16 +44,58 @@ The initialization parameters:
 - mount point and the mount options.
 - granularity. Defaults to 4k.
 
-Then after checks it writes this data and initializes the app state. Checks:
+Steps:
+
+1. Checks (see below).
+2. Creates a fresh ext4 filesystem on the virgin volume (4K block size, journaling enabled, 
+   label "schelk", zeroed UUID for determinism).
+3. Copies the virgin volume to the scratch volume (full block-level copy) so both are 
+   byte-identical.
+4. Computes the superblock hash and saves app state.
+
+Checks:
 
 1. Simple volume check (see below).
 2. The RAM disk is sufficiently sized for the given drive and granularity.
 3. The size of the scratch volume and the virgin volume matches.
 
+Must be confirmed either by `-y` or an interactive prompt.
+
+### `init-from`
+
+Adopts an existing, pre-populated virgin volume. Use this when you have already prepared the virgin
+volume with data (e.g., loaded a database snapshot, run schema migrations, etc.) and want schelk to
+take control of it. This is a **destructive** operation — the scratch volume will be overwritten
+with a full copy of the virgin.
+
+If the app state already exists, it offers if it should reinitialize.
+
+Parameters:
+
+- the virgin volume path (device or partition)
+- the scratch volume path (device or partition)
+- the ram disk path.
+- mount point and the mount options.
+- granularity. Defaults to 4k.
+
+Steps:
+
+1. Checks (see below).
+2. Copies the virgin volume to the scratch volume (full block-level copy).
+3. Computes the superblock hash and saves app state.
+
+Checks:
+
+1. Simple volume check (see below).
+2. The RAM disk is sufficiently sized for the given drive and granularity.
+3. The size of the scratch volume and the virgin volume matches.
+
+Must be confirmed either by `-y` or an interactive prompt.
+
 > 🦄 Future Feature: interactive wizard. Help the user setting up in an interactive way.
 
-This should let the user know that now schelk expects that it controls both volumes. Mounting them 
-may ruin them.
+Both commands should let the user know that schelk now expects to control both volumes. Mounting 
+them outside of schelk may ruin them.
 
 ### `full-recover`
 
