@@ -5,7 +5,7 @@ pub use eyre::eyre;
 // Helper functions to create common errors with consistent messages
 
 pub fn not_initialized() -> eyre::Report {
-    eyre!("schelk has not been initialized. Run 'schelk init' first.")
+    eyre!("schelk has not been initialized. Run 'schelk init-new' or 'schelk init-from' first.")
 }
 
 pub fn volume_mismatch() -> eyre::Report {

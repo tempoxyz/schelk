@@ -38,6 +38,9 @@ pub async fn run(
 ) -> Result<()> {
     env::require_root()?;
 
+    super::init_common::validate_granularity(granularity)?;
+    super::init_common::reject_same_device(&virgin, &scratch)?;
+
     // Check if already initialized.
     if let Some(existing) = state::load()? {
         confirm::require(
