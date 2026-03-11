@@ -19,6 +19,8 @@ made to the scratch volume and then surgically patching them.
 # Pre-requisites
 
 - sufficiently new rust version. 
+- `mkfs.ext4` from e2fsprogs. Required for `init-new`. Usually pre-installed; if not, 
+  `apt install e2fsprogs`.
 - `era_invalidate` from thin-provisioning-tools. While it can be installed via 
   `apt install thin-provisioning-tools` it is not recommended as it may be outdated. Anything 
   pre-1.0 is going to be slow. The newer version is available at [thin-provisioning-tools](https://github.com/device-mapper-utils/thin-provisioning-tools) repo.[^2]

@@ -86,7 +86,7 @@ pub enum Command {
         #[arg(long, default_value = "4096")]
         granularity: u64,
 
-        /// Skip copying virgin to scratch (you assert both volumes are already identical)
+        /// Skip copying virgin to scratch
         #[arg(long)]
         no_copy: bool,
     },
