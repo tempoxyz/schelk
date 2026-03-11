@@ -59,7 +59,7 @@ where
 /// - 4096-byte block size
 /// - Journaling enabled
 /// - Label "schelk"
-/// - Zeroed UUID (note: output is not fully deterministic due to lwext4 internals)
+/// - Zeroed UUID for determinism
 pub fn mkfs_ext4(path: &Path) -> Result<()> {
     let file = std::fs::OpenOptions::new()
         .read(true)
@@ -87,11 +87,6 @@ pub fn mkfs_ext4(path: &Path) -> Result<()> {
     ext4_mkfs::mkfs(device, config)
         .map_err(|e| eyre!("{}", e))
         .wrap_err_with(|| format!("Failed to create ext4 filesystem on {}", path.display()))?;
-
-    // Ensure the formatted data is durable on disk before continuing
-    let file = File::open(path)?;
-    file.sync_all()
-        .wrap_err_with(|| format!("Failed to sync {} after formatting", path.display()))?;
 
     Ok(())
 }
