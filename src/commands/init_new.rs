@@ -20,6 +20,7 @@ use crate::state::{self, AppState};
 use crate::volume;
 
 /// Run the init-new command
+#[expect(clippy::too_many_arguments)]
 pub async fn run(
     virgin: PathBuf,
     scratch: PathBuf,
@@ -28,6 +29,7 @@ pub async fn run(
     mount_options: Option<String>,
     granularity: u64,
     yes: bool,
+    reinit: bool,
 ) -> Result<()> {
     env::require_root()?;
 
@@ -50,7 +52,7 @@ pub async fn run(
                 existing.virgin.display(),
                 existing.scratch.display()
             ),
-            yes,
+            reinit,
         )?;
     }
 

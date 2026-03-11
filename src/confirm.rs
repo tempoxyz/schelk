@@ -19,11 +19,14 @@ pub fn prompt(message: &str) -> Result<bool> {
     Ok(response == "y" || response == "yes")
 }
 
-/// Require user confirmation for a destructive operation
-/// If skip is true (from -y flag), returns Ok immediately
-/// Otherwise prompts the user and returns error if they decline
+/// Require user confirmation for a destructive operation.
+///
+/// If `skip` is true (from a CLI flag), prints `[auto-confirmed]` and returns
+/// `Ok` without prompting. Otherwise prompts interactively and returns an error
+/// if the user declines.
 pub fn require(message: &str, skip: bool) -> Result<()> {
     if skip {
+        println!("[auto-confirmed] {}", message);
         return Ok(());
     }
 

@@ -53,6 +53,10 @@ pub enum Command {
         /// Block granularity in bytes
         #[arg(long, default_value = "4096")]
         granularity: u64,
+
+        /// Allow reinitializing over existing app state without prompting
+        #[arg(long)]
+        reinit: bool,
     },
 
     /// Adopt an existing pre-populated virgin volume (destructive to scratch)
@@ -89,6 +93,10 @@ pub enum Command {
         /// Skip copying virgin to scratch
         #[arg(long)]
         no_copy: bool,
+
+        /// Allow reinitializing over existing app state without prompting
+        #[arg(long)]
+        reinit: bool,
     },
 
     /// Copy virgin volume to scratch volume (full restore)

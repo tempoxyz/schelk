@@ -17,7 +17,21 @@ There are many errors modes in this tool. We need to defend against that. The us
 5. the app should prepare for crash of the system or the app itself.
 6. mount should check whether there is already mount.
 7. By default the commands are interactive and destructive operations must be confirmed either via
-   the CLI flag -y or a press.
+   a CLI flag or an interactive prompt.
+
+### Confirmation Semantics
+
+The `-y` (or `--yes`) flag means "skip the primary destructive-action prompt". It does **not**
+silently approve unrelated decisions. When a command requires multiple distinct approvals (e.g.,
+"Reinitialize existing state?" and "Proceed with destruction?"), each approval has its own flag:
+
+| Approval            | Flag        | Purpose                                         |
+|---------------------|-------------|--------------------------------------------------|
+| Reinitialize state  | `--reinit`  | Approve overwriting existing schelk app state.   |
+| Destructive proceed | `-y`        | Skip the primary "are you sure?" prompt.         |
+
+When a flag auto-skips a prompt, the tool prints `[auto-confirmed] <message>` so the user
+can see what was approved on their behalf in logs and CI output.
 
 ## Commands
 
