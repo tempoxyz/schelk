@@ -2,6 +2,7 @@
 name = "schelk"
 version = "0.1.0"
 edition = "2024"
+build = "build.rs"
 authors = ["Sergei Shulepov <pep@tempo.xyz>"]
 repository = "https://github.com/tempoxyz/schelk"
 description = "Fast snapshot rollback tool using dm-era for database bench"
