@@ -1,0 +1,2 @@
+- ./docs/principles.md principles that this program must obey.
+- ./docs/spec.md has the high-level description of the behavior expected from this program.

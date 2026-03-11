@@ -2,23 +2,6 @@
 
 Read the README.md and other documents. This is linux only.
 
-## Mindset
- 
-We should be really friendly to the user and try to minimize the opportunity to misuse this tool.
-The risk is that the user will get the wrong data from benchmarking or mess up their volumes and
-that can lead to a very costly full recovery.
-
-There are many errors modes in this tool. We need to defend against that. The user experience should be slick and foolproof.
-
-1. probably we always want to tear down the whole dm-era thing after we have recovered.
-2. during set up we should check the environment and if it makes sense. We should check if the dmsetup installed, if the version is correct. If linux version is correct.
-3. the app should be stateful. you should configure it once. Specify what disks to use. Etc.
-4. the app should be able to checksum, at least partially, the state of the virgin volume.  In case it identifies mismatch (for example, because the original volume was modified) then it should notify the user giving options to rectify the issue.
-5. the app should prepare for crash of the system or the app itself.
-6. mount should check whether there is already mount.
-7. By default the commands are interactive and destructive operations must be confirmed either via
-   the CLI flag -y or a press.
-
 ## Commands
 
 1. init-new
