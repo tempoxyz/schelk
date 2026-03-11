@@ -53,40 +53,30 @@ where
     io::full_copy(src, dst, progress)
 }
 
-/// Create a fresh ext4 filesystem on a block device or file.
+/// Check that mkfs.ext4 is available in PATH
+pub async fn check_mkfs_ext4() -> Result<()> {
+    crate::cmd::require("mkfs.ext4", "e2fsprogs (e.g., apt install e2fsprogs)").await
+}
+
+/// Create a fresh ext4 filesystem on a block device using system `mkfs.ext4`.
 ///
-/// Uses the `ext4-mkfs` crate (pure Rust, no system tools required) with:
-/// - 4096-byte block size
-/// - Journaling enabled
-/// - Label "schelk"
-/// - Zeroed UUID for determinism
+/// Runs `mkfs.ext4 -F -b 4096 -L schelk <path>` which creates an ext4 filesystem
+/// with 4096-byte blocks, journaling enabled, and the label "schelk".
 pub fn mkfs_ext4(path: &Path) -> Result<()> {
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(path)
-        .wrap_err_with(|| format!("Cannot open {} for formatting", path.display()))?;
+    let output = std::process::Command::new("mkfs.ext4")
+        .args(["-F", "-b", "4096", "-L", "schelk"])
+        .arg(path)
+        .output()
+        .wrap_err("Failed to run mkfs.ext4")?;
 
-    let total_size = if file.metadata()?.file_type().is_block_device() {
-        get_size(path)?
-    } else {
-        file.metadata()?.len()
-    };
-
-    let config = ext4_mkfs::MkfsConfig {
-        fs_type: ext4_mkfs::FsType::Ext4,
-        block_size: 4096,
-        label: Some("schelk".to_string()),
-        uuid: Some([0u8; 16]),
-        journal: true,
-        inode_size: 256,
-    };
-
-    let device = ext4_mkfs::IoBlockDevice::new(file, 4096, total_size);
-
-    ext4_mkfs::mkfs(device, config)
-        .map_err(|e| eyre!("{}", e))
-        .wrap_err_with(|| format!("Failed to create ext4 filesystem on {}", path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(eyre!(
+            "mkfs.ext4 failed on {}:\n{}",
+            path.display(),
+            stderr.trim()
+        ));
+    }
 
     Ok(())
 }

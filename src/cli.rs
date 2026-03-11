@@ -27,7 +27,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
-    /// Create fresh ext4 filesystems on both volumes from scratch (destructive)
+    /// Create a fresh ext4 filesystem on the virgin volume, then clone it to scratch (destructive)
     #[command(name = "init-new")]
     InitNew {
         /// Path to virgin volume (read-only golden image)

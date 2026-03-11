@@ -31,6 +31,9 @@ pub async fn run(
 ) -> Result<()> {
     env::require_root()?;
 
+    // Check that mkfs.ext4 is available before doing anything else
+    volume::check_mkfs_ext4().await?;
+
     // Check if already initialized.
     if let Some(existing) = state::load()? {
         confirm::require(
