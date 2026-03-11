@@ -68,7 +68,26 @@ async fn main() -> eyre::Result<()> {
     }
 
     match cli.command {
-        Some(Command::Init {
+        Some(Command::InitNew {
+            virgin,
+            scratch,
+            ramdisk,
+            mount_point,
+            mount_options,
+            granularity,
+        }) => {
+            commands::init_new::run(
+                virgin,
+                scratch,
+                ramdisk,
+                mount_point,
+                mount_options,
+                granularity,
+                cli.yes,
+            )
+            .await
+        }
+        Some(Command::InitFrom {
             virgin,
             scratch,
             ramdisk,
@@ -76,8 +95,9 @@ async fn main() -> eyre::Result<()> {
             fstype,
             mount_options,
             granularity,
+            no_copy,
         }) => {
-            commands::init::run(
+            commands::init_from::run(
                 virgin,
                 scratch,
                 ramdisk,
@@ -85,6 +105,7 @@ async fn main() -> eyre::Result<()> {
                 fstype,
                 mount_options,
                 granularity,
+                no_copy,
                 cli.yes,
             )
             .await
