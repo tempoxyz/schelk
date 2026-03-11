@@ -18,6 +18,9 @@ There are many errors modes in this tool. We need to defend against that. The us
 6. mount should check whether there is already mount.
 7. By default the commands are interactive and destructive operations must be confirmed either via
    the CLI flag -y or a press.
+8. `-y` means "skip the interactive prompt" — it does NOT mean "silently swallow everything". When
+   `-y` auto-confirms a destructive action, the tool must still log what it is doing. The user 
+   should always be able to see from the output what decisions were made on their behalf.
 
 ## Commands
 

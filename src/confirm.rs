@@ -20,10 +20,11 @@ pub fn prompt(message: &str) -> Result<bool> {
 }
 
 /// Require user confirmation for a destructive operation
-/// If skip is true (from -y flag), returns Ok immediately
+/// If skip is true (from -y flag), logs the auto-confirmed action and returns Ok
 /// Otherwise prompts the user and returns error if they decline
 pub fn require(message: &str, skip: bool) -> Result<()> {
     if skip {
+        println!("[auto-confirmed] {}", message);
         return Ok(());
     }
 
