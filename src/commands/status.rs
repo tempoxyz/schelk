@@ -24,7 +24,9 @@ pub async fn run() -> Result<()> {
         None => {
             println!("schelk is not initialized.");
             println!();
-            println!("Run 'schelk init' to configure schelk with your volumes.");
+            println!(
+                "Run 'schelk init-new' or 'schelk init-from' to configure schelk with your volumes."
+            );
         }
         Some(state) => {
             println!("schelk status");

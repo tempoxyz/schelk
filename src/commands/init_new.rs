@@ -31,6 +31,9 @@ pub async fn run(
 ) -> Result<()> {
     env::require_root()?;
 
+    super::init_common::validate_granularity(granularity)?;
+    super::init_common::reject_same_device(&virgin, &scratch)?;
+
     // Check that mkfs.ext4 is available before doing anything else
     volume::check_mkfs_ext4().await?;
 
