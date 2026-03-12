@@ -184,11 +184,11 @@ fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
 
     let mut merged: Vec<BlockRange> = Vec::new();
     for r in &sorted {
-        if let Some(last) = merged.last_mut() {
-            if last.start + last.len == r.start {
-                last.len += r.len;
-                continue;
-            }
+        if let Some(last) = merged.last_mut()
+            && last.start + last.len == r.start
+        {
+            last.len += r.len;
+            continue;
         }
         merged.push(r.clone());
     }
@@ -217,6 +217,7 @@ fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
     chunks
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_ring(
     src_fd: RawFd,
     dst_fd: RawFd,
@@ -230,8 +231,7 @@ fn run_ring(
         return Ok(());
     }
 
-    let mut ring = io_uring::IoUring::new(sq_depth)
-        .wrap_err("failed to create io_uring")?;
+    let mut ring = io_uring::IoUring::new(sq_depth).wrap_err("failed to create io_uring")?;
 
     ring.submitter()
         .register_files(&[src_fd, dst_fd])
@@ -256,6 +256,7 @@ fn run_ring(
         if first_error.is_none() {
             let mut submitted_this_iter = false;
 
+            #[allow(clippy::needless_range_loop)]
             for slot_id in 0..slots_per_ring {
                 if chunk_idx >= chunks.len() {
                     break;
@@ -353,14 +354,10 @@ fn run_ring(
                     let write_len = slots[slot_id].len as u32;
                     let offset = slots[slot_id].offset;
 
-                    let sqe = io_uring::opcode::Write::new(
-                        Fixed(1),
-                        buf,
-                        write_len,
-                    )
-                    .offset(offset)
-                    .build()
-                    .user_data(encode_user_data(slot_id, Phase::Writing));
+                    let sqe = io_uring::opcode::Write::new(Fixed(1), buf, write_len)
+                        .offset(offset)
+                        .build()
+                        .user_data(encode_user_data(slot_id, Phase::Writing));
 
                     slots[slot_id].phase = Phase::Writing;
 
@@ -416,6 +413,7 @@ fn open_direct(path: &Path, flags: OFlag) -> Result<OwnedFd> {
         .wrap_err_with(|| format!("Cannot open {}", path.display()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_copy(
     src: &Path,
     dst: &Path,
@@ -445,10 +443,10 @@ fn run_copy(
         }
     }
 
-    let ring_count = std::cmp::min(RING_COUNT, std::cmp::max(1, chunks.len()));
+    let ring_count = chunks.len().clamp(1, RING_COUNT);
 
     let mut partitions: Vec<Vec<CopyChunk>> = (0..ring_count).map(|_| Vec::new()).collect();
-    let chunks_per_ring = (chunks.len() + ring_count - 1) / ring_count;
+    let chunks_per_ring = chunks.len().div_ceil(ring_count);
     for (i, chunk) in chunks.into_iter().enumerate() {
         let ring_idx = i / chunks_per_ring;
         let ring_idx = std::cmp::min(ring_idx, ring_count - 1);
@@ -462,7 +460,15 @@ fn run_copy(
         .map(|partition| {
             let copied = Arc::clone(&copied);
             thread::spawn(move || {
-                run_ring(src_fd, dst_fd, &partition, sq_depth, slots_per_ring, slot_size, &copied)
+                run_ring(
+                    src_fd,
+                    dst_fd,
+                    &partition,
+                    sq_depth,
+                    slots_per_ring,
+                    slot_size,
+                    &copied,
+                )
             })
         })
         .collect();
@@ -552,7 +558,7 @@ where
     let chunks = prepare_chunks(blocks, granularity);
 
     let slot_size = std::cmp::max(BLOCKS_COPY_TARGET_CHUNK as usize, granularity as usize);
-    let slot_size = ((slot_size + 4095) / 4096) * 4096;
+    let slot_size = slot_size.div_ceil(4096) * 4096;
 
     run_copy(
         src,
