@@ -8,10 +8,20 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+/// Version string including the git SHA when available (e.g. "0.1.0 (abc1234)").
+fn version_string() -> &'static str {
+    if let Some(sha) = option_env!("SCHELK_GIT_SHA") {
+        // Leak is fine — called once, lives for the program's lifetime.
+        Box::leak(format!("{} ({})", env!("CARGO_PKG_VERSION"), sha).into_boxed_str())
+    } else {
+        env!("CARGO_PKG_VERSION")
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "schelk")]
 #[command(about = "Fast database benchmarking with surgical volume recovery")]
-#[command(version)]
+#[command(version = version_string())]
 pub struct Cli {
     /// Skip interactive confirmations
     #[arg(short = 'y', long = "yes", global = true)]
