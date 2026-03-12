@@ -10,7 +10,6 @@ mod confirm;
 mod dmera;
 mod env;
 mod error;
-mod io;
 mod mount;
 mod ramdisk;
 mod state;

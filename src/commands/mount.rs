@@ -19,7 +19,7 @@
 use eyre::Result;
 
 use crate::error::{not_initialized, volume_mismatch};
-use crate::{dmera, env, io, mount, ramdisk, state, volume};
+use crate::{dmera, env, mount, ramdisk, state, uring, volume};
 use eyre::eyre;
 
 /// Run the mount command
@@ -82,7 +82,7 @@ pub async fn run() -> Result<()> {
     // I am not entirely sure if this is strictly necessary but ChatGPT was suggesting that and
     // we'll err on the safe side here.
     println!("Zeroing RAM disk...");
-    io::zero(&app_state.ramdisk)?;
+    uring::zero(&app_state.ramdisk)?;
 
     // Step 4: Create dm-era device
     println!("Creating dm-era device...");

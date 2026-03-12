@@ -8,7 +8,7 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use sha2::{Digest, Sha256};
 
-use crate::{io, uring};
+use crate::uring;
 
 // Re-export BlockRange from uring (io_uring-based implementation)
 pub use crate::uring::BlockRange;
@@ -30,12 +30,12 @@ pub fn validate_block_device(path: &Path) -> Result<()> {
 
 /// Get the size of a block device in bytes
 pub fn get_size(path: &Path) -> Result<u64> {
-    io::get_size(path)
+    uring::get_size(path)
 }
 
 /// Compute SHA-256 hash of the superblock
 pub fn hash_superblock(path: &Path) -> Result<[u8; 32]> {
-    let superblock = io::read_superblock(path)?;
+    let superblock = uring::read_superblock(path)?;
 
     let mut hasher = Sha256::new();
     hasher.update(&superblock);
