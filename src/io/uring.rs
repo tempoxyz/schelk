@@ -1,3 +1,9 @@
+// io_uring-based copy engine
+//
+// Uses O_DIRECT with multiple io_uring rings running on dedicated threads
+// for high-throughput block-level copying. Each ring manages a pool of
+// aligned buffers and pipelines reads into writes.
+
 use std::alloc::{self, Layout};
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::path::Path;
