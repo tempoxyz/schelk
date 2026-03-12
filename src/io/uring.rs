@@ -215,7 +215,6 @@ fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
 // of copy chunks to completion. Keeping buffers, slot state, and submission
 // queues thread-local avoids cross-thread coordination in the hot path; the only
 // shared state is a byte counter used for progress reporting after writes finish.
-#[allow(clippy::too_many_arguments)]
 fn run_ring(
     src_fd: RawFd,
     dst_fd: RawFd,
@@ -266,7 +265,7 @@ fn run_ring(
         if first_error.is_none() {
             let mut submitted_this_iter = false;
 
-            #[allow(clippy::needless_range_loop)]
+            #[expect(clippy::needless_range_loop)]
             for slot_id in 0..slots_per_ring {
                 if chunk_idx >= chunks.len() {
                     break;
@@ -430,7 +429,7 @@ fn open_direct(path: &Path, flags: OFlag) -> Result<OwnedFd> {
 // the planned chunk layout is compatible with direct I/O, partitions the work
 // across several independent rings, polls shared progress for the caller, and
 // then performs the final join and durability step once all workers have exited.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 fn run_copy(
     src: &Path,
     dst: &Path,
