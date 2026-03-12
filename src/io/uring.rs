@@ -610,3 +610,346 @@ where
 
     Ok(total_bytes)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::BlockRange;
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    const BLOCK: usize = 4096;
+
+    fn patterned_bytes(size: usize, salt: u8) -> Vec<u8> {
+        (0..size)
+            .map(|i| {
+                let i = i as u64;
+                (((i * 31) + (i / 7) + (salt as u64 * 17)) % 251) as u8
+            })
+            .collect()
+    }
+
+    fn write_image(path: &Path, bytes: &[u8]) {
+        let mut f = File::create(path).unwrap();
+        f.write_all(bytes).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    fn read_image(path: &Path) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn chunk_tuples(chunks: &[CopyChunk]) -> Vec<(u64, u64)> {
+        chunks.iter().map(|c| (c.offset, c.len)).collect()
+    }
+
+    fn assert_chunks(chunks: &[CopyChunk], expected: &[(u64, u64)]) {
+        assert_eq!(chunk_tuples(chunks), expected);
+    }
+
+    fn apply_block_ranges(
+        src: &[u8],
+        dst_initial: &[u8],
+        blocks: &[BlockRange],
+        granularity: usize,
+    ) -> Vec<u8> {
+        let mut expected = dst_initial.to_vec();
+        for range in blocks {
+            if range.len == 0 {
+                continue;
+            }
+            let start = range.start as usize * granularity;
+            let len = range.len as usize * granularity;
+            expected[start..start + len].copy_from_slice(&src[start..start + len]);
+        }
+        expected
+    }
+
+    fn assert_progress_invariants(progress: &[(u64, u64)], expected_total: u64) {
+        assert!(
+            !progress.is_empty(),
+            "progress callback should be invoked at least once"
+        );
+
+        let mut last = 0u64;
+        for &(current, total) in progress {
+            assert_eq!(total, expected_total, "progress total should stay constant");
+            assert!(
+                current <= total,
+                "progress current should never exceed total"
+            );
+            assert!(
+                current >= last,
+                "progress current should be monotonic: {current} < {last}"
+            );
+            last = current;
+        }
+
+        assert_eq!(
+            progress.last().copied(),
+            Some((expected_total, expected_total)),
+            "final progress event should report completion"
+        );
+    }
+
+    fn run_full_copy_case(size: usize) -> (u64, Vec<(u64, u64)>) {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let src_bytes = patterned_bytes(size, 11);
+        let dst_initial = patterned_bytes(size, 203);
+
+        write_image(&src, &src_bytes);
+        write_image(&dst, &dst_initial);
+
+        let mut progress = Vec::new();
+        let copied = full_copy(&src, &dst, |current, total| {
+            progress.push((current, total));
+        })
+        .unwrap();
+
+        assert_eq!(
+            read_image(&dst),
+            src_bytes,
+            "full_copy must be byte-identical"
+        );
+
+        (copied, progress)
+    }
+
+    fn run_copy_blocks_case(size: usize, blocks: &[BlockRange]) -> (u64, Vec<(u64, u64)>) {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let src_bytes = patterned_bytes(size, 19);
+        let dst_initial = patterned_bytes(size, 227);
+
+        write_image(&src, &src_bytes);
+        write_image(&dst, &dst_initial);
+
+        let mut progress = Vec::new();
+        let copied = copy_blocks(&src, &dst, blocks, BLOCK as u64, |current, total| {
+            progress.push((current, total));
+        })
+        .unwrap();
+
+        let expected = apply_block_ranges(&src_bytes, &dst_initial, blocks, BLOCK);
+        assert_eq!(
+            read_image(&dst),
+            expected,
+            "copy_blocks must copy exactly the requested ranges"
+        );
+
+        (copied, progress)
+    }
+
+    // --- encode/decode ---
+
+    #[test]
+    fn encode_decode_user_data_round_trips() {
+        let slot_ids = [0usize, 1, 7, 42, 1024, 65_535];
+        let phases = [Phase::Free, Phase::Reading, Phase::Writing];
+
+        for &slot_id in &slot_ids {
+            for &phase in &phases {
+                let encoded = encode_user_data(slot_id, phase);
+                let (decoded_slot, decoded_phase) = decode_user_data(encoded);
+                assert_eq!(decoded_slot, slot_id);
+                assert!(decoded_phase == phase);
+            }
+        }
+    }
+
+    // --- sequential_chunks ---
+
+    #[test]
+    fn sequential_chunks_cover_empty_exact_and_non_aligned_sizes() {
+        assert_chunks(&sequential_chunks(0, 8192), &[]);
+
+        assert_chunks(
+            &sequential_chunks(16 * 1024, 8 * 1024),
+            &[(0, 8 * 1024), (8 * 1024, 8 * 1024)],
+        );
+
+        // Non-aligned size rounds up to next 4096 boundary
+        assert_chunks(&sequential_chunks(5000, 4096), &[(0, 4096), (4096, 4096)]);
+    }
+
+    // --- prepare_chunks ---
+
+    #[test]
+    fn prepare_chunks_sorts_merges_adjacent_and_keeps_scattered_ranges_separate() {
+        let blocks = vec![
+            BlockRange { start: 20, len: 2 },
+            BlockRange { start: 0, len: 2 },
+            BlockRange { start: 2, len: 1 },
+            BlockRange { start: 10, len: 1 },
+        ];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(
+            &chunks,
+            &[
+                (0, 3 * BLOCK as u64),
+                (10 * BLOCK as u64, BLOCK as u64),
+                (20 * BLOCK as u64, 2 * BLOCK as u64),
+            ],
+        );
+    }
+
+    #[test]
+    fn prepare_chunks_keeps_non_adjacent_ranges_separate() {
+        let blocks = vec![
+            BlockRange { start: 3, len: 2 },
+            BlockRange { start: 1, len: 1 },
+        ];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(
+            &chunks,
+            &[
+                (BLOCK as u64, BLOCK as u64),
+                (3 * BLOCK as u64, 2 * BLOCK as u64),
+            ],
+        );
+    }
+
+    #[test]
+    fn prepare_chunks_handles_exact_target_chunk_boundary() {
+        let blocks = vec![BlockRange {
+            start: 8,
+            len: BLOCKS_COPY_TARGET_CHUNK / BLOCK as u64,
+        }];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(&chunks, &[(8 * BLOCK as u64, BLOCKS_COPY_TARGET_CHUNK)]);
+    }
+
+    #[test]
+    fn prepare_chunks_splits_large_ranges_respecting_granularity() {
+        let granularity = 24 * 1024u64; // 6 * 4096
+        let blocks = vec![BlockRange { start: 0, len: 40 }];
+
+        let chunks = prepare_chunks(&blocks, granularity);
+
+        for chunk in &chunks {
+            assert_eq!(chunk.offset % granularity, 0);
+            assert_eq!(chunk.len % granularity, 0);
+            assert!(chunk.len <= BLOCKS_COPY_MAX_CHUNK);
+        }
+    }
+
+    // --- full_copy ---
+
+    #[test]
+    fn full_copy_copies_aligned_sizes() {
+        let sizes = [
+            BLOCK,
+            3 * BLOCK,
+            FULL_COPY_CHUNK_SIZE,
+            FULL_COPY_CHUNK_SIZE + BLOCK,
+            2 * FULL_COPY_CHUNK_SIZE + 3 * BLOCK,
+        ];
+
+        for size in sizes {
+            let (copied, progress) = run_full_copy_case(size);
+            assert_eq!(copied, size as u64);
+            assert_progress_invariants(&progress, size as u64);
+        }
+    }
+
+    // --- copy_blocks ---
+
+    #[test]
+    fn copy_blocks_empty_input_returns_zero() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let dst_bytes = patterned_bytes(8 * BLOCK, 201);
+        write_image(&src, &patterned_bytes(8 * BLOCK, 13));
+        write_image(&dst, &dst_bytes);
+
+        let mut invoked = false;
+        let copied = copy_blocks(&src, &dst, &[], BLOCK as u64, |_, _| {
+            invoked = true;
+        })
+        .unwrap();
+
+        assert_eq!(copied, 0);
+        assert!(!invoked, "empty block list should not invoke progress");
+        assert_eq!(
+            read_image(&dst),
+            dst_bytes,
+            "destination must stay untouched"
+        );
+    }
+
+    #[test]
+    fn copy_blocks_copies_single_block() {
+        let blocks = [BlockRange { start: 5, len: 1 }];
+        let (copied, progress) = run_copy_blocks_case(16 * BLOCK, &blocks);
+
+        assert_eq!(copied, BLOCK as u64);
+        assert_progress_invariants(&progress, BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_copies_adjacent_ranges() {
+        let blocks = [
+            BlockRange { start: 2, len: 2 },
+            BlockRange { start: 4, len: 3 },
+        ];
+        let (copied, _) = run_copy_blocks_case(20 * BLOCK, &blocks);
+        assert_eq!(copied, 5 * BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_copies_scattered_ranges() {
+        let blocks = [
+            BlockRange { start: 0, len: 1 },
+            BlockRange { start: 5, len: 2 },
+            BlockRange { start: 10, len: 1 },
+        ];
+        let (copied, _) = run_copy_blocks_case(16 * BLOCK, &blocks);
+        assert_eq!(copied, 4 * BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_handles_chunk_boundary_and_tail() {
+        let exact_blocks = BLOCKS_COPY_TARGET_CHUNK / BLOCK as u64;
+        for len in [exact_blocks, exact_blocks + 3] {
+            let blocks = [BlockRange { start: 8, len }];
+            let (copied, progress) = run_copy_blocks_case(160 * BLOCK, &blocks);
+
+            let expected = len * BLOCK as u64;
+            assert_eq!(copied, expected);
+            assert_progress_invariants(&progress, expected);
+        }
+    }
+
+    // --- progress ---
+
+    #[test]
+    fn progress_callbacks_are_monotonic_and_finish_at_total() {
+        let full_size = FULL_COPY_CHUNK_SIZE + 4 * BLOCK;
+        let (_, full_progress) = run_full_copy_case(full_size);
+        assert_progress_invariants(&full_progress, full_size as u64);
+
+        let blocks = [
+            BlockRange { start: 1, len: 8 },
+            BlockRange { start: 16, len: 5 },
+        ];
+        let (_, blocks_progress) = run_copy_blocks_case(64 * BLOCK, &blocks);
+        assert_progress_invariants(&blocks_progress, 13 * BLOCK as u64);
+    }
+}
