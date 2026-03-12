@@ -1,0 +1,955 @@
+//! io_uring-backed copy engine for direct block I/O.
+//!
+//! This module is the high-throughput backend used when the copy path should
+//! bypass the page cache. Work is normalized into aligned byte ranges, split
+//! across a small number of worker threads, and executed through separate
+//! `io_uring` instances so the kernel can overlap reads and writes efficiently.
+//!
+//! Each worker owns its own ring, a fixed pool of aligned buffers, and a simple
+//! slot state machine. A slot progresses from free -> reading -> writing and
+//! then back to free, which lets the worker pipeline operations without
+//! allocating request objects on the hot path. Progress is only counted after
+//! writes complete, so reported bytes reflect data that has made it through the
+//! full read/write pipeline.
+//!
+//! The module exposes two operating modes:
+//! - `full_copy`, which streams an entire source sequentially with large chunks.
+//! - `copy_blocks`, which copies selected block ranges while preserving the
+//!   caller's block granularity and coalescing adjacent regions when possible.
+
+use std::alloc::{self, Layout};
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+
+use eyre::{Result, WrapErr, eyre};
+use io_uring::types::Fixed;
+use nix::fcntl::OFlag;
+use nix::sys::stat::Mode;
+
+use super::BlockRange;
+
+// The engine keeps separate tuning profiles for full sequential copies and
+// sparse block-range copies because they stress the pipeline differently.
+// Sequential copies favor larger buffers and fewer active slots, while sparse
+// copies benefit from more queue depth and somewhat smaller chunks so fragmented
+// work can still keep each ring busy. Submission batching is shared by both
+// modes to reduce syscall overhead without forcing every SQE to wait for a full
+// queue.
+const RING_COUNT: usize = 4;
+
+const FULL_COPY_CHUNK_SIZE: usize = 2 * 1024 * 1024;
+const FULL_COPY_SQ_DEPTH: u32 = 256;
+const FULL_COPY_SLOTS_PER_RING: usize = 64;
+
+const BLOCKS_COPY_TARGET_CHUNK: u64 = 256 * 1024;
+const BLOCKS_COPY_MAX_CHUNK: u64 = 1024 * 1024;
+const BLOCKS_COPY_SQ_DEPTH: u32 = 512;
+const BLOCKS_COPY_SLOTS_PER_RING: usize = 128;
+
+const SUBMIT_BATCH_SIZE: usize = 32;
+
+// Copy work is reduced to byte ranges before it reaches the I/O workers. Each
+// worker then tracks a fixed number of slots, where every slot owns one reusable
+// buffer and carries just enough metadata to continue the read -> write pipeline
+// when completions arrive out of order.
+struct CopyChunk {
+    offset: u64,
+    len: u64,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Phase {
+    Free,
+    Reading,
+    Writing,
+}
+
+struct Slot {
+    offset: u64,
+    len: u64,
+    phase: Phase,
+}
+
+// `io_uring` gives each completion a single opaque `user_data` value. Encoding
+// the slot id together with the phase that produced the SQE lets the completion
+// side recover exactly which reusable buffer finished and whether the next step
+// is to schedule a write or retire the slot entirely.
+fn encode_user_data(slot_id: usize, phase: Phase) -> u64 {
+    slot_id as u64 | ((phase as u64) << 32)
+}
+
+fn decode_user_data(ud: u64) -> (usize, Phase) {
+    let slot_id = (ud & 0xFFFF_FFFF) as usize;
+    let phase = match ud >> 32 {
+        0 => Phase::Free,
+        1 => Phase::Reading,
+        2 => Phase::Writing,
+        _ => Phase::Free,
+    };
+    (slot_id, phase)
+}
+
+// O_DIRECT generally requires page-aligned buffers, so each worker allocates
+// one aligned arena up front and slices it into fixed-size slots. Reusing this
+// memory for the lifetime of the worker keeps allocation out of the hot path and
+// makes buffer ownership line up naturally with the slot state machine.
+struct AlignedBufferPool {
+    base: std::ptr::NonNull<u8>,
+    slot_size: usize,
+    slot_count: usize,
+    layout: Layout,
+}
+
+impl AlignedBufferPool {
+    fn new(slot_size: usize, slot_count: usize) -> Result<Self> {
+        let total = slot_size
+            .checked_mul(slot_count)
+            .ok_or_else(|| eyre!("buffer pool size overflow"))?;
+        let layout = Layout::from_size_align(total, 4096)
+            .map_err(|e| eyre!("invalid buffer layout: {}", e))?;
+        let base = std::ptr::NonNull::new(unsafe { alloc::alloc(layout) })
+            .ok_or_else(|| eyre!("failed to allocate aligned buffer pool"))?;
+        unsafe {
+            std::ptr::write_bytes(base.as_ptr(), 0, total);
+        }
+        Ok(Self {
+            base,
+            slot_size,
+            slot_count,
+            layout,
+        })
+    }
+
+    fn slot_mut_ptr(&self, idx: usize) -> *mut u8 {
+        assert!(idx < self.slot_count);
+        unsafe { self.base.as_ptr().add(idx * self.slot_size) }
+    }
+
+    fn slot_ptr(&self, idx: usize) -> *const u8 {
+        self.slot_mut_ptr(idx) as *const u8
+    }
+}
+
+// The pool owns raw memory directly rather than a container type that derives
+// thread-safety automatically. It is still safe to move between threads because
+// each worker has exclusive ownership of its pool, and `Drop` centralizes the
+// matching deallocation for the manually allocated arena.
+unsafe impl Send for AlignedBufferPool {}
+
+impl Drop for AlignedBufferPool {
+    fn drop(&mut self) {
+        unsafe {
+            alloc::dealloc(self.base.as_ptr(), self.layout);
+        }
+    }
+}
+
+// Full-copy mode is the simple streaming path. The size is rounded up to direct
+// I/O alignment once up front so the rest of the engine can assume requests are
+// chunked on legal boundaries instead of carrying alignment logic through the
+// submission path.
+fn sequential_chunks(size: u64, chunk_size: u64) -> Vec<CopyChunk> {
+    let aligned_size = (size + 4095) & !4095;
+    let mut chunks = Vec::new();
+    let mut offset = 0u64;
+    while offset < aligned_size {
+        let len = std::cmp::min(chunk_size, aligned_size - offset);
+        chunks.push(CopyChunk { offset, len });
+        offset += len;
+    }
+    chunks
+}
+
+// Sparse block-copy mode starts from logical block ranges rather than raw byte
+// offsets. Adjacent ranges are merged first so fragmentation in the input does
+// not force unnecessary I/O boundaries, then each merged range is split into
+// chunks that are large enough for throughput but always rounded to the caller's
+// block granularity so requests never violate the higher-level block model.
+fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sorted: Vec<BlockRange> = blocks.to_vec();
+    sorted.sort_by_key(|r| r.start);
+
+    let mut merged: Vec<BlockRange> = Vec::new();
+    for r in &sorted {
+        if let Some(last) = merged.last_mut()
+            && last.start + last.len == r.start
+        {
+            last.len += r.len;
+            continue;
+        }
+        merged.push(r.clone());
+    }
+
+    let mut chunks = Vec::new();
+    for range in &merged {
+        let byte_offset = range.start * granularity;
+        let byte_len = range.len * granularity;
+        let mut off = 0u64;
+        while off < byte_len {
+            let remaining = byte_len - off;
+            let target = BLOCKS_COPY_TARGET_CHUNK;
+            let raw_len = std::cmp::min(remaining, std::cmp::max(target, granularity));
+            let capped = std::cmp::min(raw_len, BLOCKS_COPY_MAX_CHUNK);
+            let aligned = (capped / granularity) * granularity;
+            let chunk_len = if aligned == 0 { granularity } else { aligned };
+            let chunk_len = std::cmp::min(chunk_len, remaining);
+            chunks.push(CopyChunk {
+                offset: byte_offset + off,
+                len: chunk_len,
+            });
+            off += chunk_len;
+        }
+    }
+
+    chunks
+}
+
+// One worker thread owns one `io_uring` instance and drives a private partition
+// of copy chunks to completion. Keeping buffers, slot state, and submission
+// queues thread-local avoids cross-thread coordination in the hot path; the only
+// shared state is a byte counter used for progress reporting after writes finish.
+fn run_ring(
+    src_fd: RawFd,
+    dst_fd: RawFd,
+    chunks: &[CopyChunk],
+    sq_depth: u32,
+    slots_per_ring: usize,
+    slot_size: usize,
+    copied: &AtomicU64,
+) -> Result<()> {
+    if chunks.is_empty() {
+        return Ok(());
+    }
+
+    // File descriptors are registered once per ring and then referenced by
+    // fixed indexes in SQEs. That removes per-operation descriptor installation
+    // overhead and makes the hot path fully about buffer reuse and state
+    // transitions instead of repeated setup.
+    let mut ring = io_uring::IoUring::new(sq_depth).wrap_err("failed to create io_uring")?;
+
+    ring.submitter()
+        .register_files(&[src_fd, dst_fd])
+        .wrap_err("failed to register files")?;
+
+    // Each slot corresponds to one reusable aligned buffer. The slot table is
+    // the worker's complete bookkeeping structure: a read claims a free slot,
+    // the resulting completion promotes that same slot into a write, and the
+    // write completion finally frees it for reuse.
+    let pool = AlignedBufferPool::new(slot_size, slots_per_ring)?;
+
+    let mut slots: Vec<Slot> = (0..slots_per_ring)
+        .map(|_| Slot {
+            offset: 0,
+            len: 0,
+            phase: Phase::Free,
+        })
+        .collect();
+
+    let mut chunk_idx = 0usize;
+    let mut in_flight = 0usize;
+    let mut pending_submits = 0usize;
+    let mut first_error: Option<eyre::Report> = None;
+
+    // The worker alternates between filling free slots with new reads and
+    // draining completions. After the first error it stops accepting new work
+    // but continues draining everything already in flight so the ring is left in
+    // a clean state and the earliest failure can be returned deterministically.
+    loop {
+        if first_error.is_none() {
+            let mut submitted_this_iter = false;
+
+            #[expect(clippy::needless_range_loop)]
+            for slot_id in 0..slots_per_ring {
+                if chunk_idx >= chunks.len() {
+                    break;
+                }
+                if slots[slot_id].phase != Phase::Free {
+                    continue;
+                }
+
+                let chunk = &chunks[chunk_idx];
+                chunk_idx += 1;
+
+                let buf = pool.slot_mut_ptr(slot_id);
+                let read_len = std::cmp::min(chunk.len as usize, slot_size);
+
+                let sqe = io_uring::opcode::Read::new(Fixed(0), buf, read_len as u32)
+                    .offset(chunk.offset)
+                    .build()
+                    .user_data(encode_user_data(slot_id, Phase::Reading));
+
+                slots[slot_id].phase = Phase::Reading;
+                slots[slot_id].offset = chunk.offset;
+                slots[slot_id].len = read_len as u64;
+
+                unsafe {
+                    ring.submission()
+                        .push(&sqe)
+                        .map_err(|_| eyre!("submission queue full"))?;
+                }
+
+                in_flight += 1;
+                pending_submits += 1;
+                submitted_this_iter = true;
+
+                if pending_submits >= SUBMIT_BATCH_SIZE {
+                    ring.submitter().submit().wrap_err("submit failed")?;
+                    pending_submits = 0;
+                }
+            }
+
+            if pending_submits > 0 && submitted_this_iter {
+                ring.submitter().submit().wrap_err("submit failed")?;
+                pending_submits = 0;
+            }
+        }
+
+        if in_flight == 0 {
+            break;
+        }
+
+        if pending_submits > 0 {
+            ring.submitter().submit().wrap_err("submit failed")?;
+            pending_submits = 0;
+        }
+
+        ring.submitter()
+            .submit_and_wait(1)
+            .wrap_err("submit_and_wait failed")?;
+
+        // Completions are collected into a Vec to release the mutable borrow on
+        // the ring before processing. This lets the completion handler submit
+        // follow-up writes without conflicting with the completion iterator.
+        let cqes: Vec<_> = ring.completion().collect();
+        for cqe in &cqes {
+            let (slot_id, phase) = decode_user_data(cqe.user_data());
+            let result = cqe.result();
+
+            if result < 0 {
+                if first_error.is_none() {
+                    let err = std::io::Error::from_raw_os_error(-result);
+                    first_error = Some(eyre::Report::new(err).wrap_err(format!(
+                        "io_uring operation failed at offset {}",
+                        slots[slot_id].offset
+                    )));
+                }
+                slots[slot_id].phase = Phase::Free;
+                in_flight -= 1;
+                continue;
+            }
+
+            match phase {
+                Phase::Reading => {
+                    let expected = slots[slot_id].len as i32;
+                    if result != expected {
+                        if first_error.is_none() {
+                            first_error = Some(eyre!(
+                                "short read at offset {}: expected {} bytes, got {}",
+                                slots[slot_id].offset,
+                                expected,
+                                result
+                            ));
+                        }
+                        slots[slot_id].phase = Phase::Free;
+                        in_flight -= 1;
+                        continue;
+                    }
+
+                    let buf = pool.slot_ptr(slot_id);
+                    let write_len = slots[slot_id].len as u32;
+                    let offset = slots[slot_id].offset;
+
+                    let sqe = io_uring::opcode::Write::new(Fixed(1), buf, write_len)
+                        .offset(offset)
+                        .build()
+                        .user_data(encode_user_data(slot_id, Phase::Writing));
+
+                    slots[slot_id].phase = Phase::Writing;
+
+                    unsafe {
+                        ring.submission()
+                            .push(&sqe)
+                            .map_err(|_| eyre!("submission queue full"))?;
+                    }
+
+                    pending_submits += 1;
+                    if pending_submits >= SUBMIT_BATCH_SIZE {
+                        ring.submitter().submit().wrap_err("submit failed")?;
+                        pending_submits = 0;
+                    }
+                }
+                Phase::Writing => {
+                    let expected = slots[slot_id].len as i32;
+                    if result != expected {
+                        if first_error.is_none() {
+                            first_error = Some(eyre!(
+                                "short write at offset {}: expected {} bytes, got {}",
+                                slots[slot_id].offset,
+                                expected,
+                                result
+                            ));
+                        }
+                        slots[slot_id].phase = Phase::Free;
+                        in_flight -= 1;
+                        continue;
+                    }
+
+                    copied.fetch_add(slots[slot_id].len, Ordering::Relaxed);
+                    slots[slot_id].phase = Phase::Free;
+                    in_flight -= 1;
+                }
+                Phase::Free => {
+                    in_flight -= 1;
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn open_direct(path: &Path, flags: OFlag) -> Result<OwnedFd> {
+    nix::fcntl::open(path, flags | OFlag::O_DIRECT, Mode::empty())
+        .map_err(eyre::Report::new)
+        .wrap_err_with(|| format!("Cannot open {}", path.display()))
+}
+
+// This is the orchestration layer shared by both copy modes. It validates that
+// the planned chunk layout is compatible with direct I/O, partitions the work
+// across several independent rings, polls shared progress for the caller, and
+// then performs the final join and durability step once all workers have exited.
+#[expect(clippy::too_many_arguments)]
+fn run_copy(
+    src: &Path,
+    dst: &Path,
+    chunks: Vec<CopyChunk>,
+    sq_depth: u32,
+    slots_per_ring: usize,
+    slot_size: usize,
+    progress: &mut dyn FnMut(u64, u64),
+    total_bytes: u64,
+) -> Result<()> {
+    let src_owned = open_direct(src, OFlag::O_RDONLY)?;
+    let dst_owned = open_direct(dst, OFlag::O_WRONLY)?;
+
+    let src_fd = src_owned.as_raw_fd();
+    let dst_fd = dst_owned.as_raw_fd();
+
+    // Direct-I/O alignment errors are cheaper to reject once here than to
+    // discover later on worker threads after rings and buffers have been
+    // created.
+    const DIRECT_IO_ALIGN: u64 = 4096;
+    for chunk in &chunks {
+        if chunk.offset % DIRECT_IO_ALIGN != 0 || chunk.len % DIRECT_IO_ALIGN != 0 {
+            return Err(eyre!(
+                "O_DIRECT requires {}-byte aligned offsets and lengths, \
+                 got offset={} len={}",
+                DIRECT_IO_ALIGN,
+                chunk.offset,
+                chunk.len
+            ));
+        }
+    }
+
+    // Work is partitioned into contiguous slices rather than dynamically
+    // balanced. Each thread owns a stable subset of chunks, while `io_uring`
+    // still provides enough internal asynchrony within each partition to keep
+    // the device busy.
+    let ring_count = chunks.len().clamp(1, RING_COUNT);
+
+    let mut partitions: Vec<Vec<CopyChunk>> = (0..ring_count).map(|_| Vec::new()).collect();
+    let chunks_per_ring = chunks.len().div_ceil(ring_count);
+    for (i, chunk) in chunks.into_iter().enumerate() {
+        let ring_idx = i / chunks_per_ring;
+        let ring_idx = std::cmp::min(ring_idx, ring_count - 1);
+        partitions[ring_idx].push(chunk);
+    }
+
+    // Workers share only a monotonic byte counter for user-visible progress.
+    // Relaxed ordering is sufficient because the counter is not used for
+    // correctness; final success is determined by joining every worker.
+    let copied = Arc::new(AtomicU64::new(0));
+
+    let handles: Vec<_> = partitions
+        .into_iter()
+        .map(|partition| {
+            let copied = Arc::clone(&copied);
+            thread::spawn(move || {
+                run_ring(
+                    src_fd,
+                    dst_fd,
+                    &partition,
+                    sq_depth,
+                    slots_per_ring,
+                    slot_size,
+                    &copied,
+                )
+            })
+        })
+        .collect();
+
+    // Progress is polled rather than pushed from workers. That avoids extra
+    // channels or callbacks on the I/O threads while still giving callers
+    // regular visibility into bytes that have cleared the read/write pipeline.
+    loop {
+        let current = copied.load(Ordering::Relaxed);
+        progress(current, total_bytes);
+
+        if current >= total_bytes {
+            break;
+        }
+
+        let all_done = handles.iter().all(|h| h.is_finished());
+        if all_done {
+            let current = copied.load(Ordering::Relaxed);
+            progress(current, total_bytes);
+            break;
+        }
+
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    // Every worker is joined even if one has already failed so panics and I/O
+    // errors cannot be silently dropped. The first failure is preserved as the
+    // primary error because it is usually the closest to the original cause.
+    let mut first_error: Option<eyre::Report> = None;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                if first_error.is_none() {
+                    first_error = Some(e);
+                }
+            }
+            Err(_) => {
+                if first_error.is_none() {
+                    first_error = Some(eyre!("ring thread panicked"));
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    nix::unistd::fsync(&dst_owned).wrap_err("failed to fsync destination")?;
+
+    Ok(())
+}
+
+// Full-copy mode measures the source once, plans a contiguous aligned chunk
+// list, and runs the shared engine with the profile tuned for large streaming.
+pub fn full_copy<F>(src: &Path, dst: &Path, mut progress: F) -> Result<u64>
+where
+    F: FnMut(u64, u64),
+{
+    let size = super::get_size(src)?;
+    let chunks = sequential_chunks(size, FULL_COPY_CHUNK_SIZE as u64);
+
+    run_copy(
+        src,
+        dst,
+        chunks,
+        FULL_COPY_SQ_DEPTH,
+        FULL_COPY_SLOTS_PER_RING,
+        FULL_COPY_CHUNK_SIZE,
+        &mut progress,
+        size,
+    )?;
+
+    Ok(size)
+}
+
+// Sparse-copy mode starts from logical block ranges. It computes the exact byte
+// total for progress reporting, coalesces adjacent ranges, and selects a slot
+// size large enough to maintain throughput while respecting block granularity.
+pub fn copy_blocks<F>(
+    src: &Path,
+    dst: &Path,
+    blocks: &[BlockRange],
+    granularity: u64,
+    mut progress: F,
+) -> Result<u64>
+where
+    F: FnMut(u64, u64),
+{
+    if blocks.is_empty() {
+        return Ok(0);
+    }
+
+    let total_blocks: u64 = blocks.iter().map(|r| r.len).sum();
+    let total_bytes = total_blocks * granularity;
+
+    let chunks = prepare_chunks(blocks, granularity);
+
+    let slot_size = std::cmp::max(BLOCKS_COPY_TARGET_CHUNK as usize, granularity as usize);
+    let slot_size = slot_size.div_ceil(4096) * 4096;
+
+    run_copy(
+        src,
+        dst,
+        chunks,
+        BLOCKS_COPY_SQ_DEPTH,
+        BLOCKS_COPY_SLOTS_PER_RING,
+        slot_size,
+        &mut progress,
+        total_bytes,
+    )?;
+
+    Ok(total_bytes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::io::BlockRange;
+    use std::fs::File;
+    use std::io::{Read, Write};
+    use std::path::Path;
+    use tempfile::tempdir;
+
+    const BLOCK: usize = 4096;
+
+    fn patterned_bytes(size: usize, salt: u8) -> Vec<u8> {
+        (0..size)
+            .map(|i| {
+                let i = i as u64;
+                (((i * 31) + (i / 7) + (salt as u64 * 17)) % 251) as u8
+            })
+            .collect()
+    }
+
+    fn write_image(path: &Path, bytes: &[u8]) {
+        let mut f = File::create(path).unwrap();
+        f.write_all(bytes).unwrap();
+        f.sync_all().unwrap();
+    }
+
+    fn read_image(path: &Path) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        File::open(path).unwrap().read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn chunk_tuples(chunks: &[CopyChunk]) -> Vec<(u64, u64)> {
+        chunks.iter().map(|c| (c.offset, c.len)).collect()
+    }
+
+    fn assert_chunks(chunks: &[CopyChunk], expected: &[(u64, u64)]) {
+        assert_eq!(chunk_tuples(chunks), expected);
+    }
+
+    fn apply_block_ranges(
+        src: &[u8],
+        dst_initial: &[u8],
+        blocks: &[BlockRange],
+        granularity: usize,
+    ) -> Vec<u8> {
+        let mut expected = dst_initial.to_vec();
+        for range in blocks {
+            if range.len == 0 {
+                continue;
+            }
+            let start = range.start as usize * granularity;
+            let len = range.len as usize * granularity;
+            expected[start..start + len].copy_from_slice(&src[start..start + len]);
+        }
+        expected
+    }
+
+    fn assert_progress_invariants(progress: &[(u64, u64)], expected_total: u64) {
+        assert!(
+            !progress.is_empty(),
+            "progress callback should be invoked at least once"
+        );
+
+        let mut last = 0u64;
+        for &(current, total) in progress {
+            assert_eq!(total, expected_total, "progress total should stay constant");
+            assert!(
+                current <= total,
+                "progress current should never exceed total"
+            );
+            assert!(
+                current >= last,
+                "progress current should be monotonic: {current} < {last}"
+            );
+            last = current;
+        }
+
+        assert_eq!(
+            progress.last().copied(),
+            Some((expected_total, expected_total)),
+            "final progress event should report completion"
+        );
+    }
+
+    fn run_full_copy_case(size: usize) -> (u64, Vec<(u64, u64)>) {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let src_bytes = patterned_bytes(size, 11);
+        let dst_initial = patterned_bytes(size, 203);
+
+        write_image(&src, &src_bytes);
+        write_image(&dst, &dst_initial);
+
+        let mut progress = Vec::new();
+        let copied = full_copy(&src, &dst, |current, total| {
+            progress.push((current, total));
+        })
+        .unwrap();
+
+        assert_eq!(
+            read_image(&dst),
+            src_bytes,
+            "full_copy must be byte-identical"
+        );
+
+        (copied, progress)
+    }
+
+    fn run_copy_blocks_case(size: usize, blocks: &[BlockRange]) -> (u64, Vec<(u64, u64)>) {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let src_bytes = patterned_bytes(size, 19);
+        let dst_initial = patterned_bytes(size, 227);
+
+        write_image(&src, &src_bytes);
+        write_image(&dst, &dst_initial);
+
+        let mut progress = Vec::new();
+        let copied = copy_blocks(&src, &dst, blocks, BLOCK as u64, |current, total| {
+            progress.push((current, total));
+        })
+        .unwrap();
+
+        let expected = apply_block_ranges(&src_bytes, &dst_initial, blocks, BLOCK);
+        assert_eq!(
+            read_image(&dst),
+            expected,
+            "copy_blocks must copy exactly the requested ranges"
+        );
+
+        (copied, progress)
+    }
+
+    // --- encode/decode ---
+
+    #[test]
+    fn encode_decode_user_data_round_trips() {
+        let slot_ids = [0usize, 1, 7, 42, 1024, 65_535];
+        let phases = [Phase::Free, Phase::Reading, Phase::Writing];
+
+        for &slot_id in &slot_ids {
+            for &phase in &phases {
+                let encoded = encode_user_data(slot_id, phase);
+                let (decoded_slot, decoded_phase) = decode_user_data(encoded);
+                assert_eq!(decoded_slot, slot_id);
+                assert!(decoded_phase == phase);
+            }
+        }
+    }
+
+    // --- sequential_chunks ---
+
+    #[test]
+    fn sequential_chunks_cover_empty_exact_and_non_aligned_sizes() {
+        assert_chunks(&sequential_chunks(0, 8192), &[]);
+
+        assert_chunks(
+            &sequential_chunks(16 * 1024, 8 * 1024),
+            &[(0, 8 * 1024), (8 * 1024, 8 * 1024)],
+        );
+
+        // Non-aligned size rounds up to next 4096 boundary
+        assert_chunks(&sequential_chunks(5000, 4096), &[(0, 4096), (4096, 4096)]);
+    }
+
+    // --- prepare_chunks ---
+
+    #[test]
+    fn prepare_chunks_sorts_merges_adjacent_and_keeps_scattered_ranges_separate() {
+        let blocks = vec![
+            BlockRange { start: 20, len: 2 },
+            BlockRange { start: 0, len: 2 },
+            BlockRange { start: 2, len: 1 },
+            BlockRange { start: 10, len: 1 },
+        ];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(
+            &chunks,
+            &[
+                (0, 3 * BLOCK as u64),
+                (10 * BLOCK as u64, BLOCK as u64),
+                (20 * BLOCK as u64, 2 * BLOCK as u64),
+            ],
+        );
+    }
+
+    #[test]
+    fn prepare_chunks_keeps_non_adjacent_ranges_separate() {
+        let blocks = vec![
+            BlockRange { start: 3, len: 2 },
+            BlockRange { start: 1, len: 1 },
+        ];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(
+            &chunks,
+            &[
+                (BLOCK as u64, BLOCK as u64),
+                (3 * BLOCK as u64, 2 * BLOCK as u64),
+            ],
+        );
+    }
+
+    #[test]
+    fn prepare_chunks_handles_exact_target_chunk_boundary() {
+        let blocks = vec![BlockRange {
+            start: 8,
+            len: BLOCKS_COPY_TARGET_CHUNK / BLOCK as u64,
+        }];
+
+        let chunks = prepare_chunks(&blocks, BLOCK as u64);
+
+        assert_chunks(&chunks, &[(8 * BLOCK as u64, BLOCKS_COPY_TARGET_CHUNK)]);
+    }
+
+    #[test]
+    fn prepare_chunks_splits_large_ranges_respecting_granularity() {
+        let granularity = 24 * 1024u64; // 6 * 4096
+        let blocks = vec![BlockRange { start: 0, len: 40 }];
+
+        let chunks = prepare_chunks(&blocks, granularity);
+
+        for chunk in &chunks {
+            assert_eq!(chunk.offset % granularity, 0);
+            assert_eq!(chunk.len % granularity, 0);
+            assert!(chunk.len <= BLOCKS_COPY_MAX_CHUNK);
+        }
+    }
+
+    // --- full_copy ---
+
+    #[test]
+    fn full_copy_copies_aligned_sizes() {
+        let sizes = [
+            BLOCK,
+            3 * BLOCK,
+            FULL_COPY_CHUNK_SIZE,
+            FULL_COPY_CHUNK_SIZE + BLOCK,
+            2 * FULL_COPY_CHUNK_SIZE + 3 * BLOCK,
+        ];
+
+        for size in sizes {
+            let (copied, progress) = run_full_copy_case(size);
+            assert_eq!(copied, size as u64);
+            assert_progress_invariants(&progress, size as u64);
+        }
+    }
+
+    // --- copy_blocks ---
+
+    #[test]
+    fn copy_blocks_empty_input_returns_zero() {
+        let dir = tempdir().unwrap();
+        let src = dir.path().join("src.img");
+        let dst = dir.path().join("dst.img");
+
+        let dst_bytes = patterned_bytes(8 * BLOCK, 201);
+        write_image(&src, &patterned_bytes(8 * BLOCK, 13));
+        write_image(&dst, &dst_bytes);
+
+        let mut invoked = false;
+        let copied = copy_blocks(&src, &dst, &[], BLOCK as u64, |_, _| {
+            invoked = true;
+        })
+        .unwrap();
+
+        assert_eq!(copied, 0);
+        assert!(!invoked, "empty block list should not invoke progress");
+        assert_eq!(
+            read_image(&dst),
+            dst_bytes,
+            "destination must stay untouched"
+        );
+    }
+
+    #[test]
+    fn copy_blocks_copies_single_block() {
+        let blocks = [BlockRange { start: 5, len: 1 }];
+        let (copied, progress) = run_copy_blocks_case(16 * BLOCK, &blocks);
+
+        assert_eq!(copied, BLOCK as u64);
+        assert_progress_invariants(&progress, BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_copies_adjacent_ranges() {
+        let blocks = [
+            BlockRange { start: 2, len: 2 },
+            BlockRange { start: 4, len: 3 },
+        ];
+        let (copied, _) = run_copy_blocks_case(20 * BLOCK, &blocks);
+        assert_eq!(copied, 5 * BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_copies_scattered_ranges() {
+        let blocks = [
+            BlockRange { start: 0, len: 1 },
+            BlockRange { start: 5, len: 2 },
+            BlockRange { start: 10, len: 1 },
+        ];
+        let (copied, _) = run_copy_blocks_case(16 * BLOCK, &blocks);
+        assert_eq!(copied, 4 * BLOCK as u64);
+    }
+
+    #[test]
+    fn copy_blocks_handles_chunk_boundary_and_tail() {
+        let exact_blocks = BLOCKS_COPY_TARGET_CHUNK / BLOCK as u64;
+        for len in [exact_blocks, exact_blocks + 3] {
+            let blocks = [BlockRange { start: 8, len }];
+            let (copied, progress) = run_copy_blocks_case(160 * BLOCK, &blocks);
+
+            let expected = len * BLOCK as u64;
+            assert_eq!(copied, expected);
+            assert_progress_invariants(&progress, expected);
+        }
+    }
+
+    // --- progress ---
+
+    #[test]
+    fn progress_callbacks_are_monotonic_and_finish_at_total() {
+        let full_size = FULL_COPY_CHUNK_SIZE + 4 * BLOCK;
+        let (_, full_progress) = run_full_copy_case(full_size);
+        assert_progress_invariants(&full_progress, full_size as u64);
+
+        let blocks = [
+            BlockRange { start: 1, len: 8 },
+            BlockRange { start: 16, len: 5 },
+        ];
+        let (_, blocks_progress) = run_copy_blocks_case(64 * BLOCK, &blocks);
+        assert_progress_invariants(&blocks_progress, 13 * BLOCK as u64);
+    }
+}

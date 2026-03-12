@@ -10,7 +10,6 @@ use sha2::{Digest, Sha256};
 
 use crate::io;
 
-// Re-export BlockRange for backward compatibility
 pub use crate::io::BlockRange;
 
 /// Validate that a path is a valid block device we can access
