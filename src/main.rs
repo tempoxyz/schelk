@@ -12,6 +12,7 @@ mod env;
 mod error;
 mod io;
 mod mount;
+mod uring;
 mod ramdisk;
 mod state;
 mod volume;

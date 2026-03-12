@@ -8,10 +8,10 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use sha2::{Digest, Sha256};
 
-use crate::io;
+use crate::{io, uring};
 
-// Re-export BlockRange for backward compatibility
-pub use crate::io::BlockRange;
+// Re-export BlockRange from uring (io_uring-based implementation)
+pub use crate::uring::BlockRange;
 
 /// Validate that a path is a valid block device we can access
 pub fn validate_block_device(path: &Path) -> Result<()> {
@@ -50,7 +50,7 @@ pub fn full_copy<F>(src: &Path, dst: &Path, progress: F) -> Result<u64>
 where
     F: FnMut(u64, u64),
 {
-    io::full_copy(src, dst, progress)
+    uring::full_copy(src, dst, progress)
 }
 
 /// Check that mkfs.ext4 is available in PATH
@@ -114,7 +114,7 @@ pub fn copy_blocks<F>(
 where
     F: FnMut(u64, u64),
 {
-    io::copy_blocks(src, dst, blocks, granularity, progress)
+    uring::copy_blocks(src, dst, blocks, granularity, progress)
 }
 
 #[cfg(test)]
