@@ -1,8 +1,21 @@
-// io_uring-based copy engine
-//
-// Uses O_DIRECT with multiple io_uring rings running on dedicated threads
-// for high-throughput block-level copying. Each ring manages a pool of
-// aligned buffers and pipelines reads into writes.
+//! io_uring-backed copy engine for direct block I/O.
+//!
+//! This module is the high-throughput backend used when the copy path should
+//! bypass the page cache. Work is normalized into aligned byte ranges, split
+//! across a small number of worker threads, and executed through separate
+//! `io_uring` instances so the kernel can overlap reads and writes efficiently.
+//!
+//! Each worker owns its own ring, a fixed pool of aligned buffers, and a simple
+//! slot state machine. A slot progresses from free -> reading -> writing and
+//! then back to free, which lets the worker pipeline operations without
+//! allocating request objects on the hot path. Progress is only counted after
+//! writes complete, so reported bytes reflect data that has made it through the
+//! full read/write pipeline.
+//!
+//! The module exposes two operating modes:
+//! - `full_copy`, which streams an entire source sequentially with large chunks.
+//! - `copy_blocks`, which copies selected block ranges while preserving the
+//!   caller's block granularity and coalescing adjacent regions when possible.
 
 use std::alloc::{self, Layout};
 use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
@@ -18,6 +31,13 @@ use nix::sys::stat::Mode;
 
 use super::BlockRange;
 
+// The engine keeps separate tuning profiles for full sequential copies and
+// sparse block-range copies because they stress the pipeline differently.
+// Sequential copies favor larger buffers and fewer active slots, while sparse
+// copies benefit from more queue depth and somewhat smaller chunks so fragmented
+// work can still keep each ring busy. Submission batching is shared by both
+// modes to reduce syscall overhead without forcing every SQE to wait for a full
+// queue.
 const RING_COUNT: usize = 4;
 
 const FULL_COPY_CHUNK_SIZE: usize = 2 * 1024 * 1024;
@@ -31,6 +51,10 @@ const BLOCKS_COPY_SLOTS_PER_RING: usize = 128;
 
 const SUBMIT_BATCH_SIZE: usize = 32;
 
+// Copy work is reduced to byte ranges before it reaches the I/O workers. Each
+// worker then tracks a fixed number of slots, where every slot owns one reusable
+// buffer and carries just enough metadata to continue the read -> write pipeline
+// when completions arrive out of order.
 struct CopyChunk {
     offset: u64,
     len: u64,
@@ -49,6 +73,10 @@ struct Slot {
     phase: Phase,
 }
 
+// `io_uring` gives each completion a single opaque `user_data` value. Encoding
+// the slot id together with the phase that produced the SQE lets the completion
+// side recover exactly which reusable buffer finished and whether the next step
+// is to schedule a write or retire the slot entirely.
 fn encode_user_data(slot_id: usize, phase: Phase) -> u64 {
     slot_id as u64 | ((phase as u64) << 32)
 }
@@ -64,6 +92,10 @@ fn decode_user_data(ud: u64) -> (usize, Phase) {
     (slot_id, phase)
 }
 
+// O_DIRECT generally requires page-aligned buffers, so each worker allocates
+// one aligned arena up front and slices it into fixed-size slots. Reusing this
+// memory for the lifetime of the worker keeps allocation out of the hot path and
+// makes buffer ownership line up naturally with the slot state machine.
 struct AlignedBufferPool {
     base: std::ptr::NonNull<u8>,
     slot_size: usize,
@@ -101,6 +133,10 @@ impl AlignedBufferPool {
     }
 }
 
+// The pool owns raw memory directly rather than a container type that derives
+// thread-safety automatically. It is still safe to move between threads because
+// each worker has exclusive ownership of its pool, and `Drop` centralizes the
+// matching deallocation for the manually allocated arena.
 unsafe impl Send for AlignedBufferPool {}
 
 impl Drop for AlignedBufferPool {
@@ -111,6 +147,10 @@ impl Drop for AlignedBufferPool {
     }
 }
 
+// Full-copy mode is the simple streaming path. The size is rounded up to direct
+// I/O alignment once up front so the rest of the engine can assume requests are
+// chunked on legal boundaries instead of carrying alignment logic through the
+// submission path.
 fn sequential_chunks(size: u64, chunk_size: u64) -> Vec<CopyChunk> {
     let aligned_size = (size + 4095) & !4095;
     let mut chunks = Vec::new();
@@ -123,6 +163,11 @@ fn sequential_chunks(size: u64, chunk_size: u64) -> Vec<CopyChunk> {
     chunks
 }
 
+// Sparse block-copy mode starts from logical block ranges rather than raw byte
+// offsets. Adjacent ranges are merged first so fragmentation in the input does
+// not force unnecessary I/O boundaries, then each merged range is split into
+// chunks that are large enough for throughput but always rounded to the caller's
+// block granularity so requests never violate the higher-level block model.
 fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
     if blocks.is_empty() {
         return Vec::new();
@@ -166,6 +211,10 @@ fn prepare_chunks(blocks: &[BlockRange], granularity: u64) -> Vec<CopyChunk> {
     chunks
 }
 
+// One worker thread owns one `io_uring` instance and drives a private partition
+// of copy chunks to completion. Keeping buffers, slot state, and submission
+// queues thread-local avoids cross-thread coordination in the hot path; the only
+// shared state is a byte counter used for progress reporting after writes finish.
 #[allow(clippy::too_many_arguments)]
 fn run_ring(
     src_fd: RawFd,
@@ -180,12 +229,20 @@ fn run_ring(
         return Ok(());
     }
 
+    // File descriptors are registered once per ring and then referenced by
+    // fixed indexes in SQEs. That removes per-operation descriptor installation
+    // overhead and makes the hot path fully about buffer reuse and state
+    // transitions instead of repeated setup.
     let mut ring = io_uring::IoUring::new(sq_depth).wrap_err("failed to create io_uring")?;
 
     ring.submitter()
         .register_files(&[src_fd, dst_fd])
         .wrap_err("failed to register files")?;
 
+    // Each slot corresponds to one reusable aligned buffer. The slot table is
+    // the worker's complete bookkeeping structure: a read claims a free slot,
+    // the resulting completion promotes that same slot into a write, and the
+    // write completion finally frees it for reuse.
     let pool = AlignedBufferPool::new(slot_size, slots_per_ring)?;
 
     let mut slots: Vec<Slot> = (0..slots_per_ring)
@@ -201,6 +258,10 @@ fn run_ring(
     let mut pending_submits = 0usize;
     let mut first_error: Option<eyre::Report> = None;
 
+    // The worker alternates between filling free slots with new reads and
+    // draining completions. After the first error it stops accepting new work
+    // but continues draining everything already in flight so the ring is left in
+    // a clean state and the earliest failure can be returned deterministically.
     loop {
         if first_error.is_none() {
             let mut submitted_this_iter = false;
@@ -264,6 +325,9 @@ fn run_ring(
             .submit_and_wait(1)
             .wrap_err("submit_and_wait failed")?;
 
+        // Completions are collected into a Vec to release the mutable borrow on
+        // the ring before processing. This lets the completion handler submit
+        // follow-up writes without conflicting with the completion iterator.
         let cqes: Vec<_> = ring.completion().collect();
         for cqe in &cqes {
             let (slot_id, phase) = decode_user_data(cqe.user_data());
@@ -362,6 +426,10 @@ fn open_direct(path: &Path, flags: OFlag) -> Result<OwnedFd> {
         .wrap_err_with(|| format!("Cannot open {}", path.display()))
 }
 
+// This is the orchestration layer shared by both copy modes. It validates that
+// the planned chunk layout is compatible with direct I/O, partitions the work
+// across several independent rings, polls shared progress for the caller, and
+// then performs the final join and durability step once all workers have exited.
 #[allow(clippy::too_many_arguments)]
 fn run_copy(
     src: &Path,
@@ -379,6 +447,9 @@ fn run_copy(
     let src_fd = src_owned.as_raw_fd();
     let dst_fd = dst_owned.as_raw_fd();
 
+    // Direct-I/O alignment errors are cheaper to reject once here than to
+    // discover later on worker threads after rings and buffers have been
+    // created.
     const DIRECT_IO_ALIGN: u64 = 4096;
     for chunk in &chunks {
         if chunk.offset % DIRECT_IO_ALIGN != 0 || chunk.len % DIRECT_IO_ALIGN != 0 {
@@ -392,6 +463,10 @@ fn run_copy(
         }
     }
 
+    // Work is partitioned into contiguous slices rather than dynamically
+    // balanced. Each thread owns a stable subset of chunks, while `io_uring`
+    // still provides enough internal asynchrony within each partition to keep
+    // the device busy.
     let ring_count = chunks.len().clamp(1, RING_COUNT);
 
     let mut partitions: Vec<Vec<CopyChunk>> = (0..ring_count).map(|_| Vec::new()).collect();
@@ -402,6 +477,9 @@ fn run_copy(
         partitions[ring_idx].push(chunk);
     }
 
+    // Workers share only a monotonic byte counter for user-visible progress.
+    // Relaxed ordering is sufficient because the counter is not used for
+    // correctness; final success is determined by joining every worker.
     let copied = Arc::new(AtomicU64::new(0));
 
     let handles: Vec<_> = partitions
@@ -422,6 +500,9 @@ fn run_copy(
         })
         .collect();
 
+    // Progress is polled rather than pushed from workers. That avoids extra
+    // channels or callbacks on the I/O threads while still giving callers
+    // regular visibility into bytes that have cleared the read/write pipeline.
     loop {
         let current = copied.load(Ordering::Relaxed);
         progress(current, total_bytes);
@@ -440,6 +521,9 @@ fn run_copy(
         thread::sleep(std::time::Duration::from_millis(50));
     }
 
+    // Every worker is joined even if one has already failed so panics and I/O
+    // errors cannot be silently dropped. The first failure is preserved as the
+    // primary error because it is usually the closest to the original cause.
     let mut first_error: Option<eyre::Report> = None;
     for handle in handles {
         match handle.join() {
@@ -466,6 +550,8 @@ fn run_copy(
     Ok(())
 }
 
+// Full-copy mode measures the source once, plans a contiguous aligned chunk
+// list, and runs the shared engine with the profile tuned for large streaming.
 pub fn full_copy<F>(src: &Path, dst: &Path, mut progress: F) -> Result<u64>
 where
     F: FnMut(u64, u64),
@@ -487,6 +573,9 @@ where
     Ok(size)
 }
 
+// Sparse-copy mode starts from logical block ranges. It computes the exact byte
+// total for progress reporting, coalesces adjacent ranges, and selects a slot
+// size large enough to maintain throughput while respecting block granularity.
 pub fn copy_blocks<F>(
     src: &Path,
     dst: &Path,
