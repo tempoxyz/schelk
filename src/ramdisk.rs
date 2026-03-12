@@ -5,7 +5,7 @@ use std::path::Path;
 
 use eyre::{Result, eyre};
 
-use crate::uring;
+use crate::io;
 
 /// Fixed overhead for superblock, space map, and transaction buffers (bytes)
 const FIXED_OVERHEAD: u64 = 1024 * 1024;
@@ -88,7 +88,7 @@ fn calculate_required_sizes(volume_size: u64, granularity: u64) -> (u64, u64) {
 /// Prints a warning if size is adequate but below ideal.
 /// Returns error if size is below minimum.
 pub fn validate_size(path: &Path, volume_size: u64, granularity: u64) -> Result<()> {
-    let actual_size = uring::get_size(path)?;
+    let actual_size = io::get_size(path)?;
     let (min_size, ideal_size) = calculate_required_sizes(volume_size, granularity);
 
     // Minimum with 10% safety buffer

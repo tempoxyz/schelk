@@ -8,10 +8,9 @@ use std::path::Path;
 use eyre::{Result, WrapErr, eyre};
 use sha2::{Digest, Sha256};
 
-use crate::uring;
+use crate::io;
 
-// Re-export BlockRange from uring (io_uring-based implementation)
-pub use crate::uring::BlockRange;
+pub use crate::io::BlockRange;
 
 /// Validate that a path is a valid block device we can access
 pub fn validate_block_device(path: &Path) -> Result<()> {
@@ -30,12 +29,12 @@ pub fn validate_block_device(path: &Path) -> Result<()> {
 
 /// Get the size of a block device in bytes
 pub fn get_size(path: &Path) -> Result<u64> {
-    uring::get_size(path)
+    io::get_size(path)
 }
 
 /// Compute SHA-256 hash of the superblock
 pub fn hash_superblock(path: &Path) -> Result<[u8; 32]> {
-    let superblock = uring::read_superblock(path)?;
+    let superblock = io::read_superblock(path)?;
 
     let mut hasher = Sha256::new();
     hasher.update(&superblock);
@@ -50,7 +49,7 @@ pub fn full_copy<F>(src: &Path, dst: &Path, progress: F) -> Result<u64>
 where
     F: FnMut(u64, u64),
 {
-    uring::full_copy(src, dst, progress)
+    io::full_copy(src, dst, progress)
 }
 
 /// Check that mkfs.ext4 is available in PATH
@@ -114,7 +113,7 @@ pub fn copy_blocks<F>(
 where
     F: FnMut(u64, u64),
 {
-    uring::copy_blocks(src, dst, blocks, granularity, progress)
+    io::copy_blocks(src, dst, blocks, granularity, progress)
 }
 
 #[cfg(test)]
