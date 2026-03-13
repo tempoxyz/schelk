@@ -6,7 +6,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
+use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
@@ -87,6 +88,34 @@ pub fn load() -> Result<Option<AppState>> {
     let state: AppState = serde_json::from_str(&contents).wrap_err("State file is corrupted")?;
 
     Ok(Some(state))
+}
+
+/// Acquire an exclusive flock on the schelk lock file.
+///
+/// Returns an owned `Flock<File>` that holds the lock until dropped. This prevents concurrent
+/// schelk operations (e.g. two `recover` or `mount` calls) from racing on the same volumes.
+///
+/// The lock file lives next to the state file (e.g. `/var/lib/schelk/schelk.lock`).
+pub fn lock() -> Result<Flock<File>> {
+    let dir = state_dir()?;
+    fs::create_dir_all(&dir).wrap_err("Failed to create state directory")?;
+
+    let lock_path = dir.join("schelk.lock");
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .wrap_err_with(|| format!("Failed to open lock file: {}", lock_path.display()))?;
+
+    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, errno)| {
+        eyre!(
+            "Another schelk process is already running (flock on {}): {}",
+            lock_path.display(),
+            errno
+        )
+    })
 }
 
 /// Save app state to disk atomically

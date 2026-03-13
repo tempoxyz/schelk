@@ -26,6 +26,8 @@ use eyre::eyre;
 pub async fn run() -> Result<()> {
     env::require_root()?;
 
+    let _lock = state::lock()?;
+
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if app_state.is_mounted {
