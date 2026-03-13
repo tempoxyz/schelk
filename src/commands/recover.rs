@@ -32,6 +32,8 @@ use crate::{dmera, env, mount, state, volume};
 pub async fn run(kill: bool) -> Result<()> {
     env::require_root()?;
 
+    let _lock = state::lock()?;
+
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {

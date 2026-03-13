@@ -6,7 +6,8 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
-use eyre::{Result, WrapErr};
+use eyre::{Result, WrapErr, eyre};
+use nix::fcntl::{Flock, FlockArg};
 use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
@@ -89,6 +90,44 @@ pub fn load() -> Result<Option<AppState>> {
     Ok(Some(state))
 }
 
+/// Acquire an exclusive flock on the schelk lock file.
+///
+/// Returns an owned `Flock<File>` that holds the lock until dropped. This prevents concurrent
+/// schelk operations (e.g. two `recover` or `mount` calls) from racing on the same volumes.
+///
+/// The lock file lives next to the state file (e.g. `/var/lib/schelk/schelk.lock`).
+pub fn lock() -> Result<Flock<File>> {
+    let dir = state_dir()?;
+    lock_path(&dir.join("schelk.lock"))
+}
+
+/// Acquire an exclusive flock on a specific lock file path.
+///
+/// Same as [`lock`] but targets an arbitrary path instead of the default state directory.
+/// Useful for testing.
+pub fn lock_path(lock_path: &std::path::Path) -> Result<Flock<File>> {
+    if let Some(parent) = lock_path.parent() {
+        fs::create_dir_all(parent)
+            .wrap_err_with(|| format!("Failed to create directory: {}", parent.display()))?;
+    }
+
+    let file = File::options()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(lock_path)
+        .wrap_err_with(|| format!("Failed to open lock file: {}", lock_path.display()))?;
+
+    Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, errno)| {
+        eyre!(
+            "Another schelk process is already running (flock on {}): {}",
+            lock_path.display(),
+            errno
+        )
+    })
+}
+
 /// Save app state to disk atomically
 /// Uses write-to-temp, fsync, rename pattern for crash safety
 pub fn save(state: &AppState) -> Result<()> {
@@ -121,4 +160,56 @@ pub fn save(state: &AppState) -> Result<()> {
         .wrap_err("Failed to fsync state directory")?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn second_lock_fails_while_first_held() {
+        let dir = tempfile::tempdir().unwrap();
+        let lf = dir.path().join("schelk.lock");
+
+        let _first = lock_path(&lf).expect("first lock should succeed");
+        let err = lock_path(&lf).expect_err("second lock should fail");
+        assert!(
+            format!("{err}").contains("Another schelk process"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn lock_released_after_drop() {
+        let dir = tempfile::tempdir().unwrap();
+        let lf = dir.path().join("schelk.lock");
+
+        let first = lock_path(&lf).expect("first lock should succeed");
+        drop(first);
+        let _second = lock_path(&lf).expect("lock should succeed after drop");
+    }
+
+    #[test]
+    fn lock_contention_across_processes() {
+        use std::process::Command;
+
+        let dir = tempfile::tempdir().unwrap();
+        let lf = dir.path().join("schelk.lock");
+
+        // Hold the lock in this process
+        let _held = lock_path(&lf).expect("lock should succeed");
+
+        // Spawn a child that tries to flock the same file (non-blocking)
+        let status = Command::new("flock")
+            .args(["--nonblock", "--exclusive"])
+            .arg(&lf)
+            .arg("true")
+            .status()
+            .expect("failed to run flock(1)");
+
+        assert!(
+            !status.success(),
+            "child flock should fail while parent holds lock"
+        );
+    }
 }
