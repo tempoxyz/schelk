@@ -22,7 +22,7 @@ set -euo pipefail
 SCHELK_BIN="${1:-target/release/schelk}"
 WORK_DIR=$(mktemp -d /tmp/schelk-vm-test.XXXXXX)
 INITRAMFS_DIR="$WORK_DIR/initramfs"
-TIMEOUT="${QEMU_TIMEOUT:-180}"
+TIMEOUT="${QEMU_TIMEOUT:-300}"
 
 # ── Detect kernel ─────────────────────────────────────────────────────
 
@@ -71,7 +71,7 @@ BUSYBOX=$(command -v busybox) || { echo "ERROR: busybox not found"; exit 1; }
 cp "$BUSYBOX" "$INITRAMFS_DIR/bin/busybox"
 for cmd in sh echo cat ls mount umount mkdir sleep mknod dd sync modprobe \
            insmod lsmod depmod grep head tail wc tr basename test true false \
-           printf rm cp mv chmod chown ln which find; do
+           printf rm cp mv chmod chown ln which find sed awk poweroff; do
     ln -sf busybox "$INITRAMFS_DIR/bin/$cmd"
 done
 
@@ -172,7 +172,7 @@ timeout "$TIMEOUT" qemu-system-x86_64 \
     -machine "accel=$ACCEL" \
     -cpu max \
     -smp 2 \
-    -m 1024 \
+    -m 2048 \
     -display none \
     -no-reboot \
     -kernel "$VMLINUZ" \
