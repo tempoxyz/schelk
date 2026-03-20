@@ -66,7 +66,7 @@ pub enum Command {
         #[arg(long, default_value = "4096")]
         granularity: u64,
 
-        /// Device-mapper name for the dm-era target (allows parallel instances)
+        /// Device-mapper name for the dm-era target.
         #[arg(long, default_value = dmera::DEFAULT_DM_ERA_NAME)]
         dm_era_name: String,
     },
@@ -102,7 +102,7 @@ pub enum Command {
         #[arg(long, default_value = "4096")]
         granularity: u64,
 
-        /// Device-mapper name for the dm-era target (allows parallel instances)
+        /// Device-mapper name for the dm-era target.
         #[arg(long, default_value = dmera::DEFAULT_DM_ERA_NAME)]
         dm_era_name: String,
 

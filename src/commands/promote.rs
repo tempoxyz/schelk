@@ -103,7 +103,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
     };
 
     // Step 4: Drop metadata snapshot
-    println!("Dropping metadata snapshot...");
+    println!("Dropping metadata snapshot for '{}'...", app_state.dm_era_name);
     dmera::drop_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to drop metadata snapshot")?;

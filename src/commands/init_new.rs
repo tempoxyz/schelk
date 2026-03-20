@@ -21,7 +21,7 @@ use crate::state::{self, AppState};
 use crate::volume;
 
 /// Run the init-new command
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments)]
 pub async fn run(
     virgin: PathBuf,
     scratch: PathBuf,
