@@ -53,9 +53,11 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq \
-            qemu-system-x86 qemu-utils \
+            qemu-system-x86 \
             linux-image-generic \
             thin-provisioning-tools dmsetup e2fsprogs \
             busybox-static cpio zstd
+          # Ubuntu 24.04 installs vmlinuz as 600 root:root
+          sudo chmod 644 /boot/vmlinuz-*
       - name: Run QEMU integration tests
         run: ci/run-vm-tests.sh target/release/schelk
