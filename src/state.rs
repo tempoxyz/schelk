@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 
 use std::sync::OnceLock;
 
+use crate::dmera;
+
 // TODO: I think we should specify a directory, and then that directory should store the `state`
 // file. This may come in handy in case we would like to recover from a failure during copying
 // changed blocks out of the virgin to the scratch.
@@ -19,6 +21,10 @@ const DEFAULT_STATE_PATH: &str = "/var/lib/schelk/state.json";
 
 /// Global override for state file path (set via CLI or env var)
 static STATE_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
+
+fn default_dm_era_name() -> String {
+    dmera::DEFAULT_DM_ERA_NAME.to_string()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
@@ -40,6 +46,10 @@ pub struct AppState {
     /// SHA-256 hash of virgin superblock for integrity checks
     /// Scratch superblock should always match this (before mount and after recover)
     pub virgin_superblock_hash: [u8; 32],
+    /// Device-mapper name for the dm-era target (e.g., "bench_era").
+    /// Defaults to "bench_era" when absent (backwards-compatible with older state files).
+    #[serde(default = "default_dm_era_name")]
+    pub dm_era_name: String,
     /// Whether dm-era is active and volume is mounted
     pub is_mounted: bool,
     /// Current dm-era epoch for tracking changes
@@ -187,6 +197,45 @@ mod tests {
         let first = lock_path(&lf).expect("first lock should succeed");
         drop(first);
         let _second = lock_path(&lf).expect("lock should succeed after drop");
+    }
+
+    #[test]
+    fn old_state_without_dm_era_name_uses_default() {
+        // Simulate a state file from before dm_era_name was added
+        let json = r#"{
+            "virgin": "/dev/nvme1n1",
+            "scratch": "/dev/nvme2n1",
+            "ramdisk": "/dev/ram0",
+            "mount_point": "/schelk",
+            "fstype": "ext4",
+            "mount_options": null,
+            "granularity": 4096,
+            "virgin_superblock_hash": [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+            "is_mounted": false,
+            "current_era": null
+        }"#;
+        let state: AppState = serde_json::from_str(json).unwrap();
+        assert_eq!(state.dm_era_name, dmera::DEFAULT_DM_ERA_NAME);
+    }
+
+    #[test]
+    fn custom_dm_era_name_roundtrips() {
+        let state = AppState {
+            virgin: PathBuf::from("/dev/a"),
+            scratch: PathBuf::from("/dev/b"),
+            ramdisk: PathBuf::from("/dev/ram0"),
+            mount_point: PathBuf::from("/mnt"),
+            fstype: "ext4".to_string(),
+            mount_options: None,
+            granularity: 4096,
+            virgin_superblock_hash: [0u8; 32],
+            dm_era_name: "my_custom_era".to_string(),
+            is_mounted: false,
+            current_era: None,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let loaded: AppState = serde_json::from_str(&json).unwrap();
+        assert_eq!(loaded.dm_era_name, "my_custom_era");
     }
 
     #[test]

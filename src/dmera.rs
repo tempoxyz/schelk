@@ -11,12 +11,35 @@ use quick_xml::events::Event;
 use crate::cmd;
 use crate::volume;
 
-/// Default device name for the dm-era target
-pub const DM_ERA_NAME: &str = "bench_era";
+/// Default device name for the dm-era target.
+pub const DEFAULT_DM_ERA_NAME: &str = "bench_era";
 
-/// Path to the dm-era device in /dev/mapper
-pub fn device_path() -> std::path::PathBuf {
-    std::path::PathBuf::from("/dev/mapper").join(DM_ERA_NAME)
+/// Path to the dm-era device in /dev/mapper for the given device name.
+pub fn device_path(name: &str) -> std::path::PathBuf {
+    std::path::PathBuf::from("/dev/mapper").join(name)
+}
+
+/// Validate that a dm-era device name is safe for use with dmsetup and /dev/mapper paths.
+pub fn validate_name(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(eyre!("dm-era name must not be empty"));
+    }
+    if name.starts_with('-') {
+        return Err(eyre!(
+            "dm-era name must not start with '-' (got '{}')",
+            name
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "._+-".contains(c))
+    {
+        return Err(eyre!(
+            "dm-era name '{}' contains invalid characters (allowed: A-Z, a-z, 0-9, '.', '_', '+', '-')",
+            name
+        ));
+    }
+    Ok(())
 }
 
 /// Check that dmsetup is available in PATH
@@ -254,6 +277,31 @@ fn parse_era_invalidate_xml(xml: &str) -> Result<Vec<volume::BlockRange>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validate_name_accepts_defaults() {
+        validate_name("bench_era").unwrap();
+        validate_name("bench_era_2").unwrap();
+        validate_name("my.instance+1").unwrap();
+    }
+
+    #[test]
+    fn validate_name_rejects_empty() {
+        assert!(validate_name("").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_leading_dash() {
+        assert!(validate_name("-bad").is_err());
+        assert!(validate_name("--help").is_err());
+    }
+
+    #[test]
+    fn validate_name_rejects_path_separators() {
+        assert!(validate_name("../etc/passwd").is_err());
+        assert!(validate_name("/dev/sda1").is_err());
+        assert!(validate_name("bad name").is_err());
+    }
 
     #[test]
     fn test_parse_era_invalidate_xml() {

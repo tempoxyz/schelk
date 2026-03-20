@@ -18,6 +18,7 @@ use std::time::Instant;
 use eyre::{Result, eyre};
 
 use crate::confirm;
+use crate::dmera;
 use crate::env;
 use crate::ramdisk;
 use crate::state::{self, AppState};
@@ -33,6 +34,7 @@ pub async fn run(
     fstype: String,
     mount_options: Option<String>,
     granularity: u64,
+    dm_era_name: String,
     no_copy: bool,
     yes: bool,
 ) -> Result<()> {
@@ -40,6 +42,7 @@ pub async fn run(
 
     super::init_common::validate_granularity(granularity)?;
     super::init_common::reject_same_device(&virgin, &scratch)?;
+    dmera::validate_name(&dm_era_name)?;
 
     // Check if already initialized.
     if let Some(existing) = state::load()? {
@@ -142,6 +145,7 @@ pub async fn run(
         mount_options,
         granularity,
         virgin_superblock_hash,
+        dm_era_name,
         is_mounted: false,
         current_era: None,
     };

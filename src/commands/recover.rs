@@ -8,10 +8,10 @@
 //
 // Operation:
 //   1. Unmount the filesystem (flushes writes, prevents further modifications)
-//   2. Take dm-era metadata snapshot: dmsetup message bench_era 0 take_metadata_snap
+//   2. Take dm-era metadata snapshot: dmsetup message <dm_era_name> 0 take_metadata_snap
 //   3. Collect changed blocks: era_invalidate --metadata-snapshot --written-since <era> /dev/ram0 > changed.xml
-//   4. Drop metadata snapshot: dmsetup message bench_era 0 drop_metadata_snap
-//   5. Remove dm-era device: dmsetup remove bench_era
+//   4. Drop metadata snapshot: dmsetup message <dm_era_name> 0 drop_metadata_snap
+//   5. Remove dm-era device: dmsetup remove <dm_era_name>
 //   6. Parse changed.xml and copy affected blocks from virgin to scratch
 //   7. Update app state (clear mounted flag, remove changed.xml)
 //
@@ -47,12 +47,12 @@ pub async fn run(kill: bool) -> Result<()> {
     dmera::check_era_invalidate().await?;
 
     // Verify dm-era device actually exists
-    if !dmera::exists(dmera::DM_ERA_NAME).await? {
+    if !dmera::exists(&app_state.dm_era_name).await? {
         return Err(eyre!(
             "dm-era device '{}' does not exist.\n\
              State says mounted but device is missing. This may indicate a system crash.\n\
              Run 'schelk mount' to remount, or manually reset state.",
-            dmera::DM_ERA_NAME
+            app_state.dm_era_name
         ));
     }
 
@@ -77,7 +77,7 @@ pub async fn run(kill: bool) -> Result<()> {
 
     // Step 2: Take dm-era metadata snapshot
     println!("Taking dm-era metadata snapshot...");
-    dmera::take_metadata_snapshot(dmera::DM_ERA_NAME)
+    dmera::take_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to take metadata snapshot")?;
 
@@ -87,20 +87,23 @@ pub async fn run(kill: bool) -> Result<()> {
         Ok(blocks) => blocks,
         Err(e) => {
             // Try to drop the metadata snapshot before returning error
-            let _ = dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME).await;
+            let _ = dmera::drop_metadata_snapshot(&app_state.dm_era_name).await;
             return Err(e.wrap_err("Failed to collect changed blocks"));
         }
     };
 
     // Step 4: Drop metadata snapshot
-    println!("Dropping metadata snapshot...");
-    dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME)
+    println!(
+        "Dropping metadata snapshot for '{}'...",
+        app_state.dm_era_name
+    );
+    dmera::drop_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to drop metadata snapshot")?;
 
     // Step 5: Remove dm-era device
     println!("Removing dm-era device...");
-    dmera::remove(dmera::DM_ERA_NAME)
+    dmera::remove(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to remove dm-era device")?;
 

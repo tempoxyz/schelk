@@ -8,6 +8,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::dmera;
+
 /// Version string including the git SHA when available (e.g. "0.1.0 (abc1234)").
 fn version_string() -> &'static str {
     if let Some(sha) = option_env!("SCHELK_GIT_SHA") {
@@ -63,6 +65,10 @@ pub enum Command {
         /// Block granularity in bytes
         #[arg(long, default_value = "4096")]
         granularity: u64,
+
+        /// Device-mapper name for the dm-era target.
+        #[arg(long, default_value = dmera::DEFAULT_DM_ERA_NAME)]
+        dm_era_name: String,
     },
 
     /// Adopt an existing pre-populated virgin volume (destructive to scratch)
@@ -95,6 +101,10 @@ pub enum Command {
         /// Block granularity in bytes
         #[arg(long, default_value = "4096")]
         granularity: u64,
+
+        /// Device-mapper name for the dm-era target.
+        #[arg(long, default_value = dmera::DEFAULT_DM_ERA_NAME)]
+        dm_era_name: String,
 
         /// Skip copying virgin to scratch
         #[arg(long)]

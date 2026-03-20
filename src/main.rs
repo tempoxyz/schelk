@@ -75,6 +75,7 @@ async fn main() -> eyre::Result<()> {
             mount_point,
             mount_options,
             granularity,
+            dm_era_name,
         }) => {
             commands::init_new::run(
                 virgin,
@@ -83,6 +84,7 @@ async fn main() -> eyre::Result<()> {
                 mount_point,
                 mount_options,
                 granularity,
+                dm_era_name,
                 cli.yes,
             )
             .await
@@ -95,6 +97,7 @@ async fn main() -> eyre::Result<()> {
             fstype,
             mount_options,
             granularity,
+            dm_era_name,
             no_copy,
         }) => {
             commands::init_from::run(
@@ -105,6 +108,7 @@ async fn main() -> eyre::Result<()> {
                 fstype,
                 mount_options,
                 granularity,
+                dm_era_name,
                 no_copy,
                 cli.yes,
             )
