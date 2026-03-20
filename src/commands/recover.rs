@@ -50,8 +50,8 @@ pub async fn run(kill: bool) -> Result<()> {
     if !dmera::exists(&app_state.dm_era_name).await? {
         return Err(eyre!(
             "dm-era device '{}' does not exist.\n\
-             State says mounted but device is missing. This may indicate a system crash.\n\
-             Run 'schelk mount' to remount, or manually reset state.",
+             State says mounted but device is missing — likely a host reboot or power loss.\n\
+             Incremental recovery is not possible. Run 'schelk full-recover' to restore scratch from virgin.",
             app_state.dm_era_name
         ));
     }
