@@ -29,6 +29,8 @@ use crate::volume;
 pub async fn run(yes: bool) -> Result<()> {
     env::require_root()?;
 
+    let _lock = state::lock()?;
+
     let mut app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if app_state.is_mounted {
