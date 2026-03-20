@@ -40,3 +40,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo fmt --check
+
+  integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build schelk
+        run: cargo build --release
+      - name: Install VM dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            qemu-system-x86 qemu-utils \
+            linux-image-generic \
+            thin-provisioning-tools dmsetup e2fsprogs \
+            busybox-static cpio zstd
+      - name: Run QEMU integration tests
+        run: ci/run-vm-tests.sh target/release/schelk
