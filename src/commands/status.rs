@@ -43,9 +43,10 @@ pub async fn run() -> Result<()> {
                 println!("  Mount options:  {}", opts);
             }
             println!("  Granularity:    {} bytes", state.granularity);
+            println!("  dm-era name:    {}", state.dm_era_name);
             println!();
             println!("Runtime status:");
-            let device_exists = dmera::exists(dmera::DM_ERA_NAME).await.unwrap_or(false);
+            let device_exists = dmera::exists(&state.dm_era_name).await.unwrap_or(false);
             let actually_mounted = mount::is_mounted(&state.mount_point).unwrap_or(false);
 
             if state.is_mounted {

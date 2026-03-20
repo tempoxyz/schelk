@@ -37,6 +37,8 @@ use crate::{dmera, env, mount, state, volume};
 pub async fn run(yes: bool, kill: bool) -> Result<()> {
     env::require_root()?;
 
+    let _lock = state::lock()?;
+
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {
@@ -50,12 +52,12 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
     dmera::check_era_invalidate().await?;
 
     // Verify dm-era device actually exists
-    if !dmera::exists(dmera::DM_ERA_NAME).await? {
+    if !dmera::exists(&app_state.dm_era_name).await? {
         return Err(eyre!(
             "dm-era device '{}' does not exist.\n\
              State says mounted but device is missing. This may indicate a system crash.\n\
              Run 'schelk mount' to remount, or manually reset state.",
-            dmera::DM_ERA_NAME
+            app_state.dm_era_name
         ));
     }
 
@@ -85,7 +87,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
 
     // Step 2: Take dm-era metadata snapshot
     println!("Taking dm-era metadata snapshot...");
-    dmera::take_metadata_snapshot(dmera::DM_ERA_NAME)
+    dmera::take_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to take metadata snapshot")?;
 
@@ -95,20 +97,20 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
         Ok(blocks) => blocks,
         Err(e) => {
             // Try to drop the metadata snapshot before returning error
-            let _ = dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME).await;
+            let _ = dmera::drop_metadata_snapshot(&app_state.dm_era_name).await;
             return Err(e.wrap_err("Failed to collect changed blocks"));
         }
     };
 
     // Step 4: Drop metadata snapshot
     println!("Dropping metadata snapshot...");
-    dmera::drop_metadata_snapshot(dmera::DM_ERA_NAME)
+    dmera::drop_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to drop metadata snapshot")?;
 
     // Step 5: Remove dm-era device
     println!("Removing dm-era device...");
-    dmera::remove(dmera::DM_ERA_NAME)
+    dmera::remove(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to remove dm-era device")?;
 

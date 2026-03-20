@@ -9,7 +9,7 @@
 //
 // Operation:
 //   1. Zero the RAM disk
-//   2. Create dm-era device: dmsetup create bench_era ... era /dev/ram0 /dev/scratch <granularity>
+//   2. Create dm-era device: dmsetup create <dm_era_name> ... era /dev/ram0 /dev/scratch <granularity>
 //   3. Mount the dm-era device at the configured mount point
 //   4. Update app state to mark as mounted
 //
@@ -49,13 +49,13 @@ pub async fn run() -> Result<()> {
     dmera::check_dmsetup().await?;
 
     // Check if dm-era device already exists (stale state from crash?)
-    if dmera::exists(dmera::DM_ERA_NAME).await? {
+    if dmera::exists(&app_state.dm_era_name).await? {
         return Err(eyre::eyre!(
             "dm-era device '{}' already exists.\n\
              This may indicate a previous crash. Run 'schelk recover' or manually remove with:\n  \
              sudo dmsetup remove {}",
-            dmera::DM_ERA_NAME,
-            dmera::DM_ERA_NAME
+            app_state.dm_era_name,
+            app_state.dm_era_name
         ));
     }
 
@@ -87,9 +87,9 @@ pub async fn run() -> Result<()> {
     io::zero(&app_state.ramdisk)?;
 
     // Step 4: Create dm-era device
-    println!("Creating dm-era device...");
+    println!("Creating dm-era device '{}'...", app_state.dm_era_name);
     if let Err(e) = dmera::create(
-        dmera::DM_ERA_NAME,
+        &app_state.dm_era_name,
         &app_state.ramdisk,
         &app_state.scratch,
         scratch_size,
@@ -102,19 +102,19 @@ pub async fn run() -> Result<()> {
 
     // Step 5: Checkpoint to start era tracking
     println!("Initializing era tracking...");
-    if let Err(e) = dmera::checkpoint(dmera::DM_ERA_NAME).await {
+    if let Err(e) = dmera::checkpoint(&app_state.dm_era_name).await {
         // Rollback: remove dm-era device on failure
-        let _ = dmera::remove(dmera::DM_ERA_NAME).await;
+        let _ = dmera::remove(&app_state.dm_era_name).await;
         return Err(e.wrap_err("Failed to checkpoint dm-era device"));
     }
 
     // Step 6: Mount the dm-era device
+    let dm_device = dmera::device_path(&app_state.dm_era_name);
     println!(
         "Mounting {} at {}...",
-        dmera::device_path().display(),
+        dm_device.display(),
         app_state.mount_point.display()
     );
-    let dm_device = dmera::device_path();
     if let Err(e) = mount::mount(
         &dm_device,
         &app_state.mount_point,
@@ -124,7 +124,7 @@ pub async fn run() -> Result<()> {
     .await
     {
         // Rollback: remove dm-era device on mount failure
-        let _ = dmera::remove(dmera::DM_ERA_NAME).await;
+        let _ = dmera::remove(&app_state.dm_era_name).await;
         return Err(e.wrap_err("Failed to mount dm-era device"));
     }
 

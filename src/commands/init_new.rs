@@ -14,12 +14,14 @@ use std::time::Instant;
 use eyre::{Result, eyre};
 
 use crate::confirm;
+use crate::dmera;
 use crate::env;
 use crate::ramdisk;
 use crate::state::{self, AppState};
 use crate::volume;
 
 /// Run the init-new command
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     virgin: PathBuf,
     scratch: PathBuf,
@@ -27,12 +29,14 @@ pub async fn run(
     mount_point: PathBuf,
     mount_options: Option<String>,
     granularity: u64,
+    dm_era_name: String,
     yes: bool,
 ) -> Result<()> {
     env::require_root()?;
 
     super::init_common::validate_granularity(granularity)?;
     super::init_common::reject_same_device(&virgin, &scratch)?;
+    dmera::validate_name(&dm_era_name)?;
 
     // Check that mkfs.ext4 is available before doing anything else
     volume::check_mkfs_ext4().await?;
@@ -133,6 +137,7 @@ pub async fn run(
         mount_options,
         granularity,
         virgin_superblock_hash,
+        dm_era_name,
         is_mounted: false,
         current_era: None,
     };

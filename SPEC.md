@@ -43,6 +43,9 @@ Parameters:
 - the ram disk path.
 - mount point and the mount options.
 - granularity. Defaults to 4k.
+- dm-era device name. Defaults to `bench_era`. Override with `--dm-era-name` to run multiple 
+  schelk instances in parallel (each must use a unique name, separate state files, and separate
+  volumes/ramdisks).
 
 Steps:
 
@@ -77,6 +80,7 @@ Parameters:
 - the ram disk path.
 - mount point and the mount options.
 - granularity. Defaults to 4k.
+- dm-era device name. Defaults to `bench_era`. Same semantics as `init-new`.
 
 Steps:
 
@@ -116,11 +120,12 @@ Checks:
 1. Spot checks state of volumes and verifies that it is the same as the expected per the state of the 
 app.
 
-Zeroes the ramdisk and initializes dm-era for the scratch volume.
+Zeroes the ramdisk and initializes dm-era for the scratch volume using the configured device name
+(stored in state as `dm_era_name`, defaults to `bench_era`).
 
 ```
-dmsetup create bench_era ... era /dev/ram0 /dev/nvme_ <granularity>
-dmsetup message bench_era 0 checkpoint
+dmsetup create <dm_era_name> ... era /dev/ram0 /dev/nvme_ <granularity>
+dmsetup message <dm_era_name> 0 checkpoint
 ```
 
 Mounts the scratch volume at the specified location. 
@@ -141,15 +146,15 @@ from removing a filesystem while there is still some activity. That also flushes
 umount /schelk
 ```
  
-Take dm-era snapshot, invalidate. 
+Take dm-era snapshot, invalidate (using the `dm_era_name` from state). 
 
 ```
 # Create a clone of metadata for userspace reading.
-dmsetup message bench_era 0 take_metadata_snap
+dmsetup message <dm_era_name> 0 take_metadata_snap
 # Collect all the changed blocks into a file.
 era_invalidate --metadata-snapshot --written-since "$BASE" /dev/ram0 > changed.xml
 # Drop the metadata snapshot.
-dmsetup message bench_era 0 drop_metadata_snap
+dmsetup message <dm_era_name> 0 drop_metadata_snap
 ```
 
 At this point we obtained `changed.xml` containing all the blocks to restore.
@@ -161,7 +166,7 @@ At this point we obtained `changed.xml` containing all the blocks to restore.
 We should tear down the device mapper.
 
 ```
-dmsetup remove bench_era
+dmsetup remove <dm_era_name>
 ```
 
 And then perform copy of the blocks from the virgin to scratch according to `changed.xml`. The 
@@ -193,14 +198,14 @@ Steps:
 2. **Collect changed blocks via dm-era.** Same metadata snapshot and `era_invalidate` flow as 
    `recover`:
    ```
-   dmsetup message bench_era 0 take_metadata_snap
+   dmsetup message <dm_era_name> 0 take_metadata_snap
    era_invalidate --metadata-snapshot --written-since <base_era> /dev/ram0 > changed.xml
-   dmsetup message bench_era 0 drop_metadata_snap
+   dmsetup message <dm_era_name> 0 drop_metadata_snap
    ```
 
 3. **Tear down dm-era.**
    ```
-   dmsetup remove bench_era
+   dmsetup remove <dm_era_name>
    ```
 
 4. **Copy changed blocks from scratch to virgin.** This is the key difference from `recover`: the
@@ -222,6 +227,11 @@ Reports the current status.
 The app state lives in `/var/lib/schelk/state.json`. This is a system-wide location because schelk
 requires root privileges to operate (dm-era, mount, block device access). Using a fixed path avoids
 confusion when running with `sudo` (which would otherwise use root's home directory for XDG paths).
+
+The state includes a `dm_era_name` field (the device-mapper name for the dm-era target). This 
+defaults to `bench_era` and is backwards-compatible: older state files without this field will use
+the default. To run multiple schelk instances in parallel, use `--state-path` with separate state
+files and `--dm-era-name` with unique names per instance.
 
 Every update should be performed robustly: atomic updates (write to temp file, fsync, rename), 
 `fsync` the directory, etc.
