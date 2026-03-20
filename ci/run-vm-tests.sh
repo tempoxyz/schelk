@@ -26,9 +26,20 @@ TIMEOUT="${QEMU_TIMEOUT:-180}"
 
 # ── Detect kernel ─────────────────────────────────────────────────────
 
-VMLINUZ=$(ls /boot/vmlinuz-* 2>/dev/null | sort -V | tail -1)
+# Prefer the generic kernel we installed over cloud/azure/aws kernels which
+# may not be readable by the CI runner user.
+VMLINUZ=""
+for candidate in $(ls /boot/vmlinuz-*-generic 2>/dev/null | sort -V); do
+    [ -r "$candidate" ] && VMLINUZ="$candidate"
+done
 if [ -z "$VMLINUZ" ]; then
-    echo "ERROR: No kernel found in /boot/vmlinuz-*"
+    # Fall back to any readable kernel
+    for candidate in $(ls /boot/vmlinuz-* 2>/dev/null | sort -V); do
+        [ -r "$candidate" ] && VMLINUZ="$candidate"
+    done
+fi
+if [ -z "$VMLINUZ" ]; then
+    echo "ERROR: No readable kernel found in /boot/vmlinuz-*"
     echo "Install one: sudo apt-get install linux-image-generic"
     exit 1
 fi
