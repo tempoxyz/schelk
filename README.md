@@ -18,6 +18,16 @@ made to the scratch volume and then surgically patching them.
 
 # Pre-requisites
 
+## Hardware
+
+Two volumes are required: a **scratch** volume and a **virgin** volume. Each must be large enough 
+to accommodate the test data (e.g., the database snapshot you intend to benchmark against). The 
+volumes must be of equal size.[^1]
+
+[^1]: 🦄 Future Feature is to lift this restriction.
+
+## Software
+
 - sufficiently new rust version. 
 - `mkfs.ext4` from e2fsprogs. Required for `init-new`. Usually pre-installed; if not, 
   `apt install e2fsprogs`.
@@ -37,10 +47,8 @@ No binary releases at the moment. Clone repo and run `cargo install`.
 cargo install --path .
 ```
 
-This tool requires two disks of the equal size[^1] and a ramdisk. It's hard to give a precise 
-formula, but for 1.7 TiB drive at 4 KiB granularity, 4 GiB ramdisk is sufficient.
-
-[^1]: 🦄 Future Feature is to lift this restriction.
+This tool also requires a ramdisk. It's hard to give a precise formula, but for 1.7 TiB drive 
+at 4 KiB granularity, 4 GiB ramdisk is sufficient.
 
 ```
 # Load with 4 GiB size (rd_size is in KB, so 4 GiB = 4*1024*1024 = 4194304 KB)
