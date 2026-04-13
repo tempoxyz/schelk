@@ -118,8 +118,10 @@ It should be fool proof, in that it should not allow mount after amount.
  
 Pre-checks:
  
-- make sure that the mount previously happened. This should be performed by reading the app state
-  first.
+- If the volume is not mounted (`is_mounted` is false in app state), there is nothing to recover.
+  This is a no-op: print a message and exit successfully (exit code 0). This is important for
+  scripting — callers like CI pipelines should be able to run `schelk recover` unconditionally
+  without it triggering unnecessary fallback logic (e.g., a costly `full-recover`).
 - `dmsetup`, `era_invalidate` is available in the PATH.
 
 Unmount the filesystem first. This prevents further modifications and also would give a safeguard
