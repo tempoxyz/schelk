@@ -37,7 +37,8 @@ pub async fn run(kill: bool) -> Result<()> {
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {
-        return Err(not_mounted());
+        println!("Volume is not mounted. Nothing to recover.");
+        return Ok(());
     }
 
     let base_era = app_state.current_era.unwrap_or(0);
@@ -166,10 +167,6 @@ pub async fn run(kill: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn not_mounted() -> eyre::Report {
-    eyre!("Volume is not mounted.")
 }
 
 /// Format bytes in human-readable form

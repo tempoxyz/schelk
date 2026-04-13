@@ -186,7 +186,19 @@ Steps:
 2. Verify no dm-era device exists (`dmsetup ls` should not show `bench_era`).
 3. Verify no leftover `changed.xml` or temp files.
 
-## 18. Transparent action logging
+## 18. Recover is a no-op when not mounted
+
+As a CI pipeline author, I want `schelk recover` to succeed (exit 0) when the volume is not
+mounted, so that unconditional cleanup like `schelk recover || schelk full-recover` does not
+trigger an unnecessary full recovery.
+
+Steps:
+1. `schelk init-new ... -y` — initialize without mounting.
+2. `schelk recover` — should print that nothing is mounted and exit 0.
+3. `schelk mount` → `schelk recover` — normal recovery, also exit 0.
+4. `schelk recover` again — already recovered, should exit 0.
+
+## 19. Transparent action logging
 
 As a benchmarker, I want every action schelk takes to be printed to the screen so I can
 understand what happened and diagnose issues.

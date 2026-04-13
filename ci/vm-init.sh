@@ -613,6 +613,36 @@ schelk recover --state-path /tmp/state_b/state.json 2>&1 >/dev/null
 teardown /tmp/s10a /tmp/s10b
 
 ###########################################################################
+# Story 12: Recover is a no-op when not mounted
+#
+# From user-stories.md story 18: recover should exit 0 when the volume
+# is not mounted.  This matters for CI scripts that run
+# `schelk recover || schelk full-recover` — a non-zero exit from
+# recover when nothing is mounted would trigger an unnecessary
+# full-recover.
+###########################################################################
+story "STORY 12: Recover is a no-op when not mounted"
+
+teardown /tmp/s12
+setup_volumes /tmp/s12
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+# Never mounted — recover should succeed (no-op)
+assert_ok "recover when never mounted" schelk recover
+
+# Mount, recover normally, then recover again — second should be no-op
+assert_ok "mount" schelk mount
+echo "data" > "$MP/data.txt"
+sync
+assert_ok "recover (normal)" schelk recover
+assert_ok "recover again (already recovered)" schelk recover
+
+teardown /tmp/s12
+
+###########################################################################
 # Results
 ###########################################################################
 
