@@ -130,11 +130,7 @@ pub async fn run(kill: bool) -> Result<()> {
             &changed_blocks,
             app_state.granularity,
             |copied, total| {
-                let percent = if total > 0 {
-                    (copied * 100) / total
-                } else {
-                    100
-                };
+                let percent = copied.saturating_mul(100).checked_div(total).unwrap_or(100);
                 if percent != last_percent {
                     last_percent = percent;
                     print!("\r  Progress: {}%", percent);
