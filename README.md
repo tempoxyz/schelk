@@ -28,6 +28,7 @@ volumes must be of equal size.[^1]
 
 ## Software
 
+- sufficiently modern Linux. 
 - sufficiently new rust version. 
 - `mkfs.ext4` from e2fsprogs. Required for `init-new`. Usually pre-installed; if not, 
   `apt install e2fsprogs`.
@@ -40,6 +41,9 @@ volumes must be of equal size.[^1]
   ```git clone https://github.com/jthornber/thin-provisioning-tools /tmp/tpt && cargo build --release --manifest-path /tmp/tpt/Cargo.toml && sudo cp /tmp/tpt/target/release/pdata_tools /usr/local/bin/ && sudo ln -sf /usr/local/bin/pdata_tools /usr/local/bin/era_invalidate```
 
 # Usage
+
+> [!WARNING]
+> This tool requires sudo, can, and will, overwrite your data on the volumes given to it.
 
 No binary releases at the moment. Clone repo and run `cargo install`.
 
