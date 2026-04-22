@@ -5,6 +5,12 @@ systems with large on-disk state - databases, or blockchain execution clients li
 [reth](https://github.com/paradigmxyz/reth). For such systems, rebuilding the baseline between
 runs is slow, and snapshot layers distort the measurements we want to take.
 
+> [!TIP]
+> If you want Codex, Claude, or another coding agent to set up or operate schelk for you, start
+> it with [`docs/SKILL.md`](docs/SKILL.md) or point it directly at
+> <https://github.com/tempoxyz/schelk/blob/master/docs/SKILL.md>. That file tells the agent how to
+> install schelk, validate prerequisites, initialize volumes, and run the workflow safely.
+
 ## Why
 
 A good benchmarking loop has two requirements:
