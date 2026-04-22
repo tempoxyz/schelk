@@ -10,6 +10,8 @@ use clap::{Parser, Subcommand};
 
 use crate::dmera;
 
+const HELP_FOOTER: &str = "AI-agent setup and usage guide:\n  https://github.com/tempoxyz/schelk/blob/master/docs/SKILL.md";
+
 /// Version string including the git SHA when available (e.g. "0.1.0 (abc1234)").
 fn version_string() -> &'static str {
     if let Some(sha) = option_env!("SCHELK_GIT_SHA") {
@@ -24,6 +26,7 @@ fn version_string() -> &'static str {
 #[command(name = "schelk")]
 #[command(about = "Fast database benchmarking with surgical volume recovery")]
 #[command(version = version_string())]
+#[command(after_long_help = HELP_FOOTER)]
 pub struct Cli {
     /// Skip interactive confirmations
     #[arg(short = 'y', long = "yes", global = true)]
