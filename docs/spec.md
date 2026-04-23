@@ -95,6 +95,12 @@ them outside of schelk may ruin them.
 Performs copy from the virgin to the scratch. This is very costly and should be ideally performed 
 only once. Must be confirmed either by -y.
 
+If the state says "mounted" but neither the dm-era device nor the filesystem mount actually exist
+(e.g., after a host reboot or power loss), `full-recover` detects this stale state, clears it, and
+proceeds with the copy. If either the dm-era device or the mount is still live, it refuses with
+"already mounted". The stale flag is only persisted as part of the final state save after the copy
+completes — if `full-recover` crashes mid-copy the stale detection will re-trigger on the next run.
+
 ### `mount`
 
 Checks:

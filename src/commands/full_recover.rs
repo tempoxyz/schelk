@@ -49,7 +49,8 @@ pub async fn run(yes: bool) -> Result<()> {
 
         app_state.is_mounted = false;
         app_state.current_era = None;
-        state::save(&app_state)?;
+        // Don't save yet — if we crash mid-copy the stale detection will
+        // re-trigger on the next run, which is the safe behavior.
     }
 
     // Validate volumes are accessible

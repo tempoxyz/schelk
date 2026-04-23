@@ -613,6 +613,58 @@ schelk recover --state-path /tmp/state_b/state.json 2>&1 >/dev/null
 teardown /tmp/s10a /tmp/s10b
 
 ###########################################################################
+# Story 11: Full recover with stale mounted state (simulated reboot)
+#
+# After a reboot the state file still says "mounted" but the dm-era
+# device and filesystem mount are gone.  full-recover should detect this
+# stale state, auto-clear it, and proceed with the copy.
+###########################################################################
+story "STORY 11: Full recover with stale mounted state (simulated reboot)"
+
+teardown /tmp/s11
+setup_volumes /tmp/s11
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+assert_ok "mount" schelk mount
+echo "pre-reboot data" > "$MP/pre_reboot.txt"
+sync
+
+# Simulate reboot: tear down dm-era and unmount, but leave state as-is.
+# After this, state says is_mounted=true but nothing is actually live.
+umount "$MP" 2>/dev/null
+dmsetup remove bench_era 2>/dev/null
+
+# full-recover should detect the stale state and proceed
+assert_ok "full-recover with stale state" schelk full-recover -y
+
+# Verify system is usable afterward
+assert_ok "mount after stale full-recover" schelk mount
+is_mounted "$MP" || fail "mount after stale full-recover" "not mounted"
+
+# Data should be gone — we never promoted, so virgin has no pre_reboot.txt
+if [ ! -f "$MP/pre_reboot.txt" ]; then
+    pass "stale full-recover restored virgin correctly"
+else
+    fail "stale full-recover content" "pre_reboot.txt survived"
+fi
+
+assert_ok "recover (cleanup)" schelk recover
+
+# Edge case: if dm-era device is still live, full-recover must reject.
+# Simulate by mounting normally then only unmounting the filesystem.
+assert_ok "remount for edge case" schelk mount
+umount "$MP" 2>/dev/null
+# dm-era device is still live — full-recover should refuse
+assert_fail "full-recover rejects when dm-era still exists" schelk full-recover -y
+
+# Clean up the live dm-era device
+dmsetup remove bench_era 2>/dev/null
+teardown /tmp/s11
+
+###########################################################################
 # Story 12: Recover is a no-op when not mounted
 #
 # From user-stories.md story 18: recover should exit 0 when the volume

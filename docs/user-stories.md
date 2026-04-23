@@ -82,7 +82,8 @@ this and guide me to a safe recovery path.
 Steps:
 1. `schelk mount` → start the SUT → reboot the host.
 2. `schelk recover` — should refuse incremental recovery and instruct to run `full-recover`.
-3. `schelk full-recover` — restores scratch from virgin.
+3. `schelk full-recover` — detects that state says "mounted" but dm-era device and filesystem
+   are gone, auto-clears the stale flag, and restores scratch from virgin.
 4. Verify the SUT starts cleanly.
 
 ## 8. Full recovery fallback
