@@ -208,3 +208,19 @@ Steps:
 1. Run `schelk init-new ... -y` and observe output — should print each step (mkfs, copy, hash).
 2. Run `schelk mount` — should print dm-era setup and mount actions.
 3. Run `schelk recover` — should print unmount, era snapshot, block copy progress, and cleanup.
+
+## 20. Refuse to write to a volume mounted outside schelk
+
+As a benchmarker, I sometimes mount virgin or scratch outside of schelk by mistake (e.g.,
+running `mount` for a quick inspection and forgetting to unmount). If I then run a destructive
+operation that writes to that volume — `init-from`, `full-recover`, `recover`, or `promote` —
+I want schelk to refuse before any block is written, so the live mounted filesystem is not
+corrupted from underneath.
+
+Steps:
+1. `schelk init-new ... -y` — initialize as usual.
+2. Manually mount the scratch volume outside schelk
+   (e.g., `mount /dev/scratch /mnt/inspect`).
+3. `schelk full-recover -y` — should fail with a clear "device is in use" error before any
+   block is written.
+4. Unmount the volume and retry — should succeed.
