@@ -695,6 +695,49 @@ assert_ok "recover again (already recovered)" schelk recover
 teardown /tmp/s12
 
 ###########################################################################
+# Story 13: O_EXCL refuses to write to a volume mounted outside schelk
+#
+# From user-stories.md story 20 and SPEC.md principles 3 and 11
+# ("foolproof", "principle of least surprise"). If the user mounts virgin
+# or scratch outside of schelk, any subsequent destructive write would
+# silently corrupt the live filesystem. Opening the raw device with
+# O_EXCL lets the kernel reject the operation with EBUSY before any
+# block is written.
+###########################################################################
+story "STORY 13: Refuse writes to volumes mounted outside schelk"
+
+teardown /tmp/s13
+setup_volumes /tmp/s13
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+# Mount scratch directly, outside schelk's control. After init-new the
+# scratch volume is byte-identical to virgin and carries a valid ext4 fs.
+mkdir -p /tmp/s13_external
+mount -t ext4 "$SCRATCH" /tmp/s13_external
+
+# full-recover writes to scratch. With O_EXCL on the destination open,
+# the kernel must reject it because scratch is currently mounted.
+assert_fail "full-recover refuses when scratch is mounted externally" \
+    schelk full-recover -y
+
+# Error message should clearly explain that the device is in use.
+echo "$LAST_OUT" | grep -qi "in use" && \
+    pass "error mentions 'in use'" || \
+    fail "error message" "did not mention 'in use'"
+
+# Unmounting the external mount must let full-recover succeed.
+umount /tmp/s13_external
+
+assert_ok "full-recover succeeds after external unmount" \
+    schelk full-recover -y
+
+umount /tmp/s13_external 2>/dev/null || true
+teardown /tmp/s13 /tmp/s13_external
+
+###########################################################################
 # Results
 ###########################################################################
 
