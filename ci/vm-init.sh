@@ -327,15 +327,50 @@ fi
 teardown /tmp/s4
 
 ###########################################################################
-# Story 5: Promote — make scratch the new baseline
+# Story 5: Restore — recover and mount for the next run
+#
+# From user-stories.md: restore is the one-command version of
+# recover-then-mount for tight benchmark iteration loops.
+###########################################################################
+story "STORY 5: Restore and remount for the next run"
+
+teardown /tmp/s5
+setup_volumes /tmp/s5
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+assert_ok "mount" schelk mount
+echo "restore workload" > "$MP/restore_workload.txt"
+dd if=/dev/urandom of="$MP/restore_writes.bin" bs=4k count=75 2>/dev/null
+sync
+
+assert_ok "restore" schelk restore
+is_mounted "$MP" || fail "restore remount" "not mounted after restore"
+
+if [ ! -f "$MP/restore_workload.txt" ] && [ ! -f "$MP/restore_writes.bin" ]; then
+    pass "restore recovered scratch"
+else
+    fail "restore recovery" "benchmark files survived restore"
+fi
+
+echo "next benchmark" > "$MP/next_run.txt"
+sync
+[ -f "$MP/next_run.txt" ] && \
+    pass "restore leaves volume ready for next run" || fail "restore next run" "write failed"
+teardown /tmp/s5
+
+###########################################################################
+# Story 6: Promote — make scratch the new baseline
 #
 # From SPEC.md promote: after a schema migration or data load, the user
 # wants the modified scratch to become the new virgin for future runs.
 ###########################################################################
-story "STORY 5: Promote (scratch becomes new virgin)"
+story "STORY 6: Promote (scratch becomes new virgin)"
 
-teardown /tmp/s5
-setup_volumes /tmp/s5
+teardown /tmp/s6
+setup_volumes /tmp/s6
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -367,18 +402,18 @@ if [ -f "$MP/version.txt" ] && [ ! -f "$MP/bench_v2.txt" ]; then
 else
     fail "recover after promote" "bad file state"
 fi
-teardown /tmp/s5
+teardown /tmp/s6
 
 ###########################################################################
-# Story 6: Full recover — nuke and restore scratch from virgin
+# Story 7: Full recover — nuke and restore scratch from virgin
 #
 # From SPEC.md full-recover: costly full block copy, used when scratch is
 # corrupted or for initial setup. We verify the content is fully restored.
 ###########################################################################
-story "STORY 6: Full recover"
+story "STORY 7: Full recover"
 
-teardown /tmp/s6
-setup_volumes /tmp/s6
+teardown /tmp/s7
+setup_volumes /tmp/s7
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -406,24 +441,24 @@ if [ "$content" = "baseline marker" ]; then
 else
     fail "full-recover content" "expected 'baseline marker', got '$content'"
 fi
-teardown /tmp/s6
+teardown /tmp/s7
 
 ###########################################################################
-# Story 7: Status reporting at every lifecycle point
+# Story 8: Status reporting at every lifecycle point
 #
 # From SPEC.md status: reports current state. We verify it correctly
 # reflects: uninitialized, initialized/idle, mounted/tracking, recovered.
 ###########################################################################
-story "STORY 7: Status at every lifecycle point"
+story "STORY 8: Status at every lifecycle point"
 
-teardown /tmp/s7
+teardown /tmp/s8
 rm -f /var/lib/schelk/state.json
 
 STATUS=$(schelk status 2>&1)
 echo "$STATUS" | grep -q "not initialized" && \
     pass "status: not initialized" || fail "status uninit" "wrong output"
 
-setup_volumes /tmp/s7
+setup_volumes /tmp/s8
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
     --mount-point "$MP" -y
@@ -446,20 +481,20 @@ echo "$STATUS" | grep -q "Mounted: no (state)" && \
 echo "$STATUS" | grep -q "dm-era device: none" && \
     pass "status: after recover" || fail "status recovered" "wrong output"
 
-teardown /tmp/s7
+teardown /tmp/s8
 
 ###########################################################################
-# Story 8: Crash recovery — detect and handle inconsistent state
+# Story 9: Crash recovery — detect and handle inconsistent state
 #
 # From SPEC.md (mindset item 5): the app should prepare for crash of the
 # system or the app itself. We simulate a crash by leaving dm-era and the
 # mount live while tampering the state file to say "unmounted". Then we
 # verify that status detects the inconsistency and mount refuses.
 ###########################################################################
-story "STORY 8: Crash recovery (inconsistent state)"
+story "STORY 9: Crash recovery (inconsistent state)"
 
-teardown /tmp/s8
-setup_volumes /tmp/s8
+teardown /tmp/s9
+setup_volumes /tmp/s9
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -495,19 +530,19 @@ assert_ok "full-recover after crash" schelk full-recover -y
 assert_ok "mount after crash cleanup" schelk mount
 is_mounted "$MP" || fail "mount after crash cleanup" "not mounted"
 
-teardown /tmp/s8
+teardown /tmp/s9
 
 ###########################################################################
-# Story 9: Reinitialize — init-new when already initialized
+# Story 10: Reinitialize — init-new when already initialized
 #
 # From SPEC.md init-new: "If the app state already exists, it offers if
 # it should reinitialize." Verify that re-running init-new with -y creates
 # a fresh filesystem and the full cycle still works.
 ###########################################################################
-story "STORY 9: Reinitialize"
+story "STORY 10: Reinitialize"
 
-teardown /tmp/s9
-setup_volumes /tmp/s9
+teardown /tmp/s10
+setup_volumes /tmp/s10
 
 assert_ok "first init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -540,37 +575,37 @@ assert_ok "recover after reinit" schelk recover
 assert_ok "remount" schelk mount
 [ ! -f "$MP/reinit.txt" ] && \
     pass "full cycle works after reinit" || fail "cycle after reinit" "file survived"
-teardown /tmp/s9
+teardown /tmp/s10
 
 ###########################################################################
-# Story 10: Parallel instances — two independent schelk on separate volumes
+# Story 11: Parallel instances — two independent schelk on separate volumes
 #
 # From SPEC.md: "Override with --dm-era-name to run multiple schelk
 # instances in parallel (each must use a unique name, separate state files,
 # and separate volumes/ramdisks)."
 ###########################################################################
-story "STORY 10: Parallel instances"
+story "STORY 11: Parallel instances"
 
-teardown /tmp/s10a /tmp/s10b
+teardown /tmp/s11a /tmp/s11b
 
 # Instance A
-mkdir -p /tmp/s10a
-dd if=/dev/zero of=/tmp/s10a/virgin.img bs=1M count=32 2>/dev/null
-dd if=/dev/zero of=/tmp/s10a/scratch.img bs=1M count=32 2>/dev/null
-dd if=/dev/zero of=/tmp/s10a/ramdisk.img bs=1M count=4 2>/dev/null
-A_VIRGIN=$(/sbin/losetup --find --show /tmp/s10a/virgin.img)
-A_SCRATCH=$(/sbin/losetup --find --show /tmp/s10a/scratch.img)
-A_RAMDISK=$(/sbin/losetup --find --show /tmp/s10a/ramdisk.img)
+mkdir -p /tmp/s11a
+dd if=/dev/zero of=/tmp/s11a/virgin.img bs=1M count=32 2>/dev/null
+dd if=/dev/zero of=/tmp/s11a/scratch.img bs=1M count=32 2>/dev/null
+dd if=/dev/zero of=/tmp/s11a/ramdisk.img bs=1M count=4 2>/dev/null
+A_VIRGIN=$(/sbin/losetup --find --show /tmp/s11a/virgin.img)
+A_SCRATCH=$(/sbin/losetup --find --show /tmp/s11a/scratch.img)
+A_RAMDISK=$(/sbin/losetup --find --show /tmp/s11a/ramdisk.img)
 mkdir -p /tmp/mnt_a /tmp/state_a
 
 # Instance B
-mkdir -p /tmp/s10b
-dd if=/dev/zero of=/tmp/s10b/virgin.img bs=1M count=32 2>/dev/null
-dd if=/dev/zero of=/tmp/s10b/scratch.img bs=1M count=32 2>/dev/null
-dd if=/dev/zero of=/tmp/s10b/ramdisk.img bs=1M count=4 2>/dev/null
-B_VIRGIN=$(/sbin/losetup --find --show /tmp/s10b/virgin.img)
-B_SCRATCH=$(/sbin/losetup --find --show /tmp/s10b/scratch.img)
-B_RAMDISK=$(/sbin/losetup --find --show /tmp/s10b/ramdisk.img)
+mkdir -p /tmp/s11b
+dd if=/dev/zero of=/tmp/s11b/virgin.img bs=1M count=32 2>/dev/null
+dd if=/dev/zero of=/tmp/s11b/scratch.img bs=1M count=32 2>/dev/null
+dd if=/dev/zero of=/tmp/s11b/ramdisk.img bs=1M count=4 2>/dev/null
+B_VIRGIN=$(/sbin/losetup --find --show /tmp/s11b/virgin.img)
+B_SCRATCH=$(/sbin/losetup --find --show /tmp/s11b/scratch.img)
+B_RAMDISK=$(/sbin/losetup --find --show /tmp/s11b/ramdisk.img)
 mkdir -p /tmp/mnt_b /tmp/state_b
 
 assert_ok "init instance A" schelk init-new \
@@ -610,19 +645,19 @@ fi
 # Cleanup
 schelk recover --state-path /tmp/state_a/state.json -y 2>&1 >/dev/null
 schelk recover --state-path /tmp/state_b/state.json 2>&1 >/dev/null
-teardown /tmp/s10a /tmp/s10b
+teardown /tmp/s11a /tmp/s11b
 
 ###########################################################################
-# Story 11: Full recover with stale mounted state (simulated reboot)
+# Story 12: Full recover with stale mounted state (simulated reboot)
 #
 # After a reboot the state file still says "mounted" but the dm-era
 # device and filesystem mount are gone.  full-recover should detect this
 # stale state, auto-clear it, and proceed with the copy.
 ###########################################################################
-story "STORY 11: Full recover with stale mounted state (simulated reboot)"
+story "STORY 12: Full recover with stale mounted state (simulated reboot)"
 
-teardown /tmp/s11
-setup_volumes /tmp/s11
+teardown /tmp/s12
+setup_volumes /tmp/s12
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -662,21 +697,21 @@ assert_fail "full-recover rejects when dm-era still exists" schelk full-recover 
 
 # Clean up the live dm-era device
 dmsetup remove bench_era 2>/dev/null
-teardown /tmp/s11
+teardown /tmp/s12
 
 ###########################################################################
-# Story 12: Recover is a no-op when not mounted
+# Story 13: Recover is a no-op when not mounted
 #
-# From user-stories.md story 18: recover should exit 0 when the volume
+# From user-stories.md: recover should exit 0 when the volume
 # is not mounted.  This matters for CI scripts that run
 # `schelk recover || schelk full-recover` — a non-zero exit from
 # recover when nothing is mounted would trigger an unnecessary
 # full-recover.
 ###########################################################################
-story "STORY 12: Recover is a no-op when not mounted"
+story "STORY 13: Recover is a no-op when not mounted"
 
-teardown /tmp/s12
-setup_volumes /tmp/s12
+teardown /tmp/s13
+setup_volumes /tmp/s13
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -692,22 +727,22 @@ sync
 assert_ok "recover (normal)" schelk recover
 assert_ok "recover again (already recovered)" schelk recover
 
-teardown /tmp/s12
+teardown /tmp/s13
 
 ###########################################################################
-# Story 13: O_EXCL refuses to write to a volume mounted outside schelk
+# Story 14: O_EXCL refuses to write to a volume mounted outside schelk
 #
-# From user-stories.md story 20 and SPEC.md principles 3 and 11
+# From user-stories.md and SPEC.md principles 3 and 11
 # ("foolproof", "principle of least surprise"). If the user mounts virgin
 # or scratch outside of schelk, any subsequent destructive write would
 # silently corrupt the live filesystem. Opening the raw device with
 # O_EXCL lets the kernel reject the operation with EBUSY before any
 # block is written.
 ###########################################################################
-story "STORY 13: Refuse writes to volumes mounted outside schelk"
+story "STORY 14: Refuse writes to volumes mounted outside schelk"
 
-teardown /tmp/s13
-setup_volumes /tmp/s13
+teardown /tmp/s14
+setup_volumes /tmp/s14
 
 assert_ok "init-new" schelk init-new \
     --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
@@ -715,8 +750,8 @@ assert_ok "init-new" schelk init-new \
 
 # Mount scratch directly, outside schelk's control. After init-new the
 # scratch volume is byte-identical to virgin and carries a valid ext4 fs.
-mkdir -p /tmp/s13_external
-mount -t ext4 "$SCRATCH" /tmp/s13_external
+mkdir -p /tmp/s14_external
+mount -t ext4 "$SCRATCH" /tmp/s14_external
 
 # full-recover writes to scratch. With O_EXCL on the destination open,
 # the kernel must reject it because scratch is currently mounted.
@@ -729,13 +764,13 @@ echo "$LAST_OUT" | grep -qi "in use" && \
     fail "error message" "did not mention 'in use'"
 
 # Unmounting the external mount must let full-recover succeed.
-umount /tmp/s13_external
+umount /tmp/s14_external
 
 assert_ok "full-recover succeeds after external unmount" \
     schelk full-recover -y
 
-umount /tmp/s13_external 2>/dev/null || true
-teardown /tmp/s13 /tmp/s13_external
+umount /tmp/s14_external 2>/dev/null || true
+teardown /tmp/s14 /tmp/s14_external
 
 ###########################################################################
 # Results
