@@ -20,19 +20,39 @@ use std::time::Instant;
 use eyre::Result;
 
 use crate::confirm;
-use crate::env;
 use crate::error::{already_mounted, not_initialized};
-use crate::state;
-use crate::volume;
+use crate::{dmera, env, mount, state, volume};
 
 /// Run the full-recover command
 pub async fn run(yes: bool) -> Result<()> {
     env::require_root()?;
 
+    let _lock = state::lock()?;
+
     let mut app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if app_state.is_mounted {
-        return Err(already_mounted());
+        // After a reboot or power loss the state file still says "mounted" but
+        // the dm-era device and filesystem mount are gone.  Detect this stale
+        // state and allow full-recover to proceed — there is nothing to unmount.
+        let dm_era_exists = dmera::exists(&app_state.dm_era_name).await?;
+        let fs_mounted = mount::is_mounted(&app_state.mount_point)?;
+
+        if dm_era_exists || fs_mounted {
+            return Err(already_mounted());
+        }
+
+        println!(
+            "State says mounted, but dm-era device and filesystem are gone \
+             (likely a reboot or power loss)."
+        );
+        println!("Clearing stale mounted state and proceeding with full recovery.");
+        println!();
+
+        app_state.is_mounted = false;
+        app_state.current_era = None;
+        // Don't save yet — if we crash mid-copy the stale detection will
+        // re-trigger on the next run, which is the safe behavior.
     }
 
     // Validate volumes are accessible

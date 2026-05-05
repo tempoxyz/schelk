@@ -419,10 +419,31 @@ fn run_ring(
     Ok(())
 }
 
+// Volumes are always opened with O_EXCL. On Linux, applying O_EXCL to a block
+// device (without O_CREAT) makes the kernel reject the open with EBUSY whenever
+// the device is already in use — mounted, claimed by an active device-mapper
+// target, or held by another O_EXCL opener. That matches schelk's invariant
+// that virgin and scratch are exclusively managed: copying into a live volume
+// would corrupt it, and reading from a live volume would feed inconsistent
+// data into the next destination. Surfacing EBUSY here turns a silent data
+// hazard into a clear failure before any I/O is issued.
 fn open_direct(path: &Path, flags: OFlag) -> Result<OwnedFd> {
-    nix::fcntl::open(path, flags | OFlag::O_DIRECT, Mode::empty())
-        .map_err(eyre::Report::new)
-        .wrap_err_with(|| format!("Cannot open {}", path.display()))
+    match nix::fcntl::open(path, flags | OFlag::O_DIRECT | OFlag::O_EXCL, Mode::empty()) {
+        Ok(fd) => Ok(fd),
+        Err(errno) => {
+            let msg = if errno == nix::errno::Errno::EBUSY {
+                format!(
+                    "Cannot open {} exclusively: the device is in use \
+                     (mounted, claimed by an active dm-era target, or held \
+                     by another O_EXCL opener)",
+                    path.display()
+                )
+            } else {
+                format!("Cannot open {}", path.display())
+            };
+            Err(eyre::Report::new(errno).wrap_err(msg))
+        }
+    }
 }
 
 // This is the orchestration layer shared by both copy modes. It validates that

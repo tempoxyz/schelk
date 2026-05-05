@@ -83,7 +83,8 @@ this and guide me to a safe recovery path.
 Steps:
 1. `schelk mount` → start the SUT → reboot the host.
 2. `schelk recover` — should refuse incremental recovery and instruct to run `full-recover`.
-3. `schelk full-recover` — restores scratch from virgin.
+3. `schelk full-recover` — detects that state says "mounted" but dm-era device and filesystem
+   are gone, auto-clears the stale flag, and restores scratch from virgin.
 4. Verify the SUT starts cleanly.
 
 ## 8. Full recovery fallback
@@ -187,7 +188,19 @@ Steps:
 2. Verify no dm-era device exists (`dmsetup ls` should not show `bench_era`).
 3. Verify no leftover `changed.xml` or temp files.
 
-## 18. Transparent action logging
+## 18. Recover is a no-op when not mounted
+
+As a CI pipeline author, I want `schelk recover` to succeed (exit 0) when the volume is not
+mounted, so that unconditional cleanup like `schelk recover || schelk full-recover` does not
+trigger an unnecessary full recovery.
+
+Steps:
+1. `schelk init-new ... -y` — initialize without mounting.
+2. `schelk recover` — should print that nothing is mounted and exit 0.
+3. `schelk mount` → `schelk recover` — normal recovery, also exit 0.
+4. `schelk recover` again — already recovered, should exit 0.
+
+## 19. Transparent action logging
 
 As a benchmarker, I want every action schelk takes to be printed to the screen so I can
 understand what happened and diagnose issues.
@@ -196,3 +209,19 @@ Steps:
 1. Run `schelk init-new ... -y` and observe output — should print each step (mkfs, copy, hash).
 2. Run `schelk mount` — should print dm-era setup and mount actions.
 3. Run `schelk recover` — should print unmount, era snapshot, block copy progress, and cleanup.
+
+## 20. Refuse to write to a volume mounted outside schelk
+
+As a benchmarker, I sometimes mount virgin or scratch outside of schelk by mistake (e.g.,
+running `mount` for a quick inspection and forgetting to unmount). If I then run a destructive
+operation that writes to that volume — `init-from`, `full-recover`, `recover`, or `promote` —
+I want schelk to refuse before any block is written, so the live mounted filesystem is not
+corrupted from underneath.
+
+Steps:
+1. `schelk init-new ... -y` — initialize as usual.
+2. Manually mount the scratch volume outside schelk
+   (e.g., `mount /dev/scratch /mnt/inspect`).
+3. `schelk full-recover -y` — should fail with a clear "device is in use" error before any
+   block is written.
+4. Unmount the volume and retry — should succeed.

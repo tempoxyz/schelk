@@ -613,6 +613,131 @@ schelk recover --state-path /tmp/state_b/state.json 2>&1 >/dev/null
 teardown /tmp/s10a /tmp/s10b
 
 ###########################################################################
+# Story 11: Full recover with stale mounted state (simulated reboot)
+#
+# After a reboot the state file still says "mounted" but the dm-era
+# device and filesystem mount are gone.  full-recover should detect this
+# stale state, auto-clear it, and proceed with the copy.
+###########################################################################
+story "STORY 11: Full recover with stale mounted state (simulated reboot)"
+
+teardown /tmp/s11
+setup_volumes /tmp/s11
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+assert_ok "mount" schelk mount
+echo "pre-reboot data" > "$MP/pre_reboot.txt"
+sync
+
+# Simulate reboot: tear down dm-era and unmount, but leave state as-is.
+# After this, state says is_mounted=true but nothing is actually live.
+umount "$MP" 2>/dev/null
+dmsetup remove bench_era 2>/dev/null
+
+# full-recover should detect the stale state and proceed
+assert_ok "full-recover with stale state" schelk full-recover -y
+
+# Verify system is usable afterward
+assert_ok "mount after stale full-recover" schelk mount
+is_mounted "$MP" || fail "mount after stale full-recover" "not mounted"
+
+# Data should be gone — we never promoted, so virgin has no pre_reboot.txt
+if [ ! -f "$MP/pre_reboot.txt" ]; then
+    pass "stale full-recover restored virgin correctly"
+else
+    fail "stale full-recover content" "pre_reboot.txt survived"
+fi
+
+assert_ok "recover (cleanup)" schelk recover
+
+# Edge case: if dm-era device is still live, full-recover must reject.
+# Simulate by mounting normally then only unmounting the filesystem.
+assert_ok "remount for edge case" schelk mount
+umount "$MP" 2>/dev/null
+# dm-era device is still live — full-recover should refuse
+assert_fail "full-recover rejects when dm-era still exists" schelk full-recover -y
+
+# Clean up the live dm-era device
+dmsetup remove bench_era 2>/dev/null
+teardown /tmp/s11
+
+###########################################################################
+# Story 12: Recover is a no-op when not mounted
+#
+# From user-stories.md story 18: recover should exit 0 when the volume
+# is not mounted.  This matters for CI scripts that run
+# `schelk recover || schelk full-recover` — a non-zero exit from
+# recover when nothing is mounted would trigger an unnecessary
+# full-recover.
+###########################################################################
+story "STORY 12: Recover is a no-op when not mounted"
+
+teardown /tmp/s12
+setup_volumes /tmp/s12
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+# Never mounted — recover should succeed (no-op)
+assert_ok "recover when never mounted" schelk recover
+
+# Mount, recover normally, then recover again — second should be no-op
+assert_ok "mount" schelk mount
+echo "data" > "$MP/data.txt"
+sync
+assert_ok "recover (normal)" schelk recover
+assert_ok "recover again (already recovered)" schelk recover
+
+teardown /tmp/s12
+
+###########################################################################
+# Story 13: O_EXCL refuses to write to a volume mounted outside schelk
+#
+# From user-stories.md story 20 and SPEC.md principles 3 and 11
+# ("foolproof", "principle of least surprise"). If the user mounts virgin
+# or scratch outside of schelk, any subsequent destructive write would
+# silently corrupt the live filesystem. Opening the raw device with
+# O_EXCL lets the kernel reject the operation with EBUSY before any
+# block is written.
+###########################################################################
+story "STORY 13: Refuse writes to volumes mounted outside schelk"
+
+teardown /tmp/s13
+setup_volumes /tmp/s13
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+# Mount scratch directly, outside schelk's control. After init-new the
+# scratch volume is byte-identical to virgin and carries a valid ext4 fs.
+mkdir -p /tmp/s13_external
+mount -t ext4 "$SCRATCH" /tmp/s13_external
+
+# full-recover writes to scratch. With O_EXCL on the destination open,
+# the kernel must reject it because scratch is currently mounted.
+assert_fail "full-recover refuses when scratch is mounted externally" \
+    schelk full-recover -y
+
+# Error message should clearly explain that the device is in use.
+echo "$LAST_OUT" | grep -qi "in use" && \
+    pass "error mentions 'in use'" || \
+    fail "error message" "did not mention 'in use'"
+
+# Unmounting the external mount must let full-recover succeed.
+umount /tmp/s13_external
+
+assert_ok "full-recover succeeds after external unmount" \
+    schelk full-recover -y
+
+umount /tmp/s13_external 2>/dev/null || true
+teardown /tmp/s13 /tmp/s13_external
+
+###########################################################################
 # Results
 ###########################################################################
 

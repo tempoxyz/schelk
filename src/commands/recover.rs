@@ -42,7 +42,8 @@ pub(crate) async fn run_locked(kill: bool) -> Result<()> {
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {
-        return Err(not_mounted());
+        println!("Volume is not mounted. Nothing to recover.");
+        return Ok(());
     }
 
     let base_era = app_state.current_era.unwrap_or(0);
@@ -134,11 +135,7 @@ pub(crate) async fn run_locked(kill: bool) -> Result<()> {
             &changed_blocks,
             app_state.granularity,
             |copied, total| {
-                let percent = if total > 0 {
-                    (copied * 100) / total
-                } else {
-                    100
-                };
+                let percent = copied.saturating_mul(100).checked_div(total).unwrap_or(100);
                 if percent != last_percent {
                     last_percent = percent;
                     print!("\r  Progress: {}%", percent);
@@ -171,10 +168,6 @@ pub(crate) async fn run_locked(kill: bool) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn not_mounted() -> eyre::Report {
-    eyre!("Volume is not mounted.")
 }
 
 /// Format bytes in human-readable form
