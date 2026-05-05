@@ -95,6 +95,8 @@ sudo schelk mount
 ./bench.sh
 # recovers it to the original state
 sudo schelk recover
+# or recover and immediately mount for the next run
+sudo schelk restore
 ```
 
 Note that both disks become untouchable. You must not mount them or 

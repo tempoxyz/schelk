@@ -48,7 +48,8 @@ builds) and confirm that each recovery is fast and the volume state is identical
 
 Steps:
 1. `schelk mount` → run benchmark → `schelk recover`. Note recovery duration and report.
-2. `schelk mount` → run same benchmark → `schelk recover`. Note recovery duration and report.
+2. `schelk mount` → run same benchmark → `schelk restore`. Note recovery duration and report,
+   and verify the volume is mounted for the next run.
 3. Verify recovery times are consistent and results are reproducible.
 
 ## 5. Promote after a schema migration
