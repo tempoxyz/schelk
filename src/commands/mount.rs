@@ -28,6 +28,11 @@ pub async fn run() -> Result<()> {
 
     let _lock = state::lock()?;
 
+    run_locked().await
+}
+
+/// Run the mount command while the caller holds the schelk state lock.
+pub(crate) async fn run_locked() -> Result<()> {
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if app_state.is_mounted {

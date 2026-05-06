@@ -9,8 +9,9 @@ Read the README.md and other documents. This is linux only.
 3. full-recover
 4. mount
 5. recover
-6. promote
-7. status
+6. restore
+7. promote
+8. status
 
 ### `init-new`
 
@@ -164,6 +165,15 @@ And then perform copy of the blocks from the virgin to scratch according to `cha
 progress of copying must be displayed. After finish, it should print a report.
 
 Once it succeeded we should update the app state and remove `changed.xml`.
+
+### `restore`
+
+Convenience command for the common benchmark iteration loop. It performs `recover` and, if recovery
+succeeds, immediately performs `mount`.
+
+Pre-checks and behavior are the same as `recover` followed by `mount`. It accepts the same `--kill`
+flag as `recover` for killing processes that block the unmount. If recovery fails, it must not try
+to mount.
 
 ### `promote`
 

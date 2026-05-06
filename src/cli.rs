@@ -1,5 +1,5 @@
 // CLI definition using clap
-// Defines subcommands: init-new, init-from, full-recover, mount, recover, status
+// Defines subcommands: init-new, init-from, full-recover, mount, recover, restore, promote, status
 // Global flags: -y (skip confirmation)
 //
 // Default behavior: If no subcommand is provided, runs 'status'
@@ -123,6 +123,13 @@ pub enum Command {
 
     /// Recover scratch volume from virgin (surgical restore)
     Recover {
+        /// Kill processes blocking unmount instead of failing
+        #[arg(short = 'k', long = "kill")]
+        kill: bool,
+    },
+
+    /// Recover scratch volume from virgin, then mount it again
+    Restore {
         /// Kill processes blocking unmount instead of failing
         #[arg(short = 'k', long = "kill")]
         kill: bool,

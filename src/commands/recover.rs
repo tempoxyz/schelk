@@ -34,6 +34,11 @@ pub async fn run(kill: bool) -> Result<()> {
 
     let _lock = state::lock()?;
 
+    run_locked(kill).await
+}
+
+/// Run the recover command while the caller holds the schelk state lock.
+pub(crate) async fn run_locked(kill: bool) -> Result<()> {
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {

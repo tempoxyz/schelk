@@ -51,7 +51,19 @@ Steps:
 2. `schelk mount` → run same benchmark → `schelk recover`. Note recovery duration and report.
 3. Verify recovery times are consistent and results are reproducible.
 
-## 5. Promote after a schema migration
+## 5. Restore and remount for the next run
+
+As a benchmarker, I want a single command that restores the scratch volume and mounts it again,
+so I can move directly from one completed benchmark run to the next.
+
+Steps:
+1. `schelk mount`
+2. Run the SUT against `/schelk`.
+3. `schelk restore`
+4. Verify the scratch volume is restored to baseline and mounted again.
+5. Run the next benchmark without a separate `schelk mount`.
+
+## 6. Promote after a schema migration
 
 As a benchmarker, I ran a SUT version that performs a database migration. I want to promote
 the migrated scratch volume to become the new virgin so future benchmarks start from the
@@ -63,7 +75,7 @@ Steps:
 3. `schelk promote`
 4. `schelk mount` → verify the SUT starts without re-migrating.
 
-## 6. Recover after a process crash
+## 7. Recover after a process crash
 
 As a benchmarker, the SUT crashed mid-benchmark (e.g., kill -9) but the host stayed up. I want
 schelk to handle this gracefully and let me recover without a full copy.
@@ -73,7 +85,7 @@ Steps:
 2. `schelk recover` — should detect dirty state and recover incrementally.
 3. Verify the volume is restored and the SUT starts cleanly.
 
-## 7. Detect unsafe state after host reboot
+## 8. Detect unsafe state after host reboot
 
 As a benchmarker, the host rebooted or lost power while schelk was mounted. Since dm-era
 metadata lives on a ramdisk, incremental recovery is not possible. I want schelk to detect
@@ -86,7 +98,7 @@ Steps:
    are gone, auto-clears the stale flag, and restores scratch from virgin.
 4. Verify the SUT starts cleanly.
 
-## 8. Full recovery fallback
+## 9. Full recovery fallback
 
 As a benchmarker, when incremental recovery is unsafe (e.g., after host reboot, tampering, or
 a bad `--no-copy` assumption), I want to run `full-recover` to restore scratch from virgin.
@@ -96,7 +108,7 @@ Steps:
 2. Wait for the full copy to complete.
 3. `schelk mount` → verify the SUT starts cleanly from the baseline.
 
-## 9. Detect virgin volume tampering
+## 10. Detect virgin volume tampering
 
 As a benchmarker, I accidentally mounted the virgin volume outside of schelk. I want schelk to
 detect this and refuse to proceed before I run a benchmark with a corrupted baseline.
@@ -106,7 +118,7 @@ Steps:
 2. Unmount it.
 3. `schelk mount` — should detect superblock hash mismatch and refuse to proceed.
 
-## 10. Prevent double mount
+## 11. Prevent double mount
 
 As a benchmarker, I accidentally run `schelk mount` twice. I want schelk to detect the existing
 mount and refuse rather than corrupting state.
@@ -115,7 +127,7 @@ Steps:
 1. `schelk mount`
 2. `schelk mount` again — should fail with a clear error.
 
-## 11. Init-from with --no-copy
+## 12. Init-from with --no-copy
 
 As a benchmarker, I prepared both volumes identically myself (e.g., via dd). I want to skip the
 full copy during init to save time.
@@ -126,7 +138,7 @@ Steps:
 3. `schelk mount` → run benchmark → `schelk recover`.
 4. Verify recovery produces correct results.
 
-## 12. Environment validation on init
+## 13. Environment validation on init
 
 As a benchmarker on a fresh machine, I want schelk to tell me exactly what's missing before I
 waste time on a partial setup.
@@ -136,7 +148,7 @@ Steps:
 2. `schelk init-new` — should fail with a clear message about the missing tool.
 3. Install it, retry — should succeed.
 
-## 13. Environment validation on recover
+## 14. Environment validation on recover
 
 As a benchmarker, I want schelk to check that recovery tools are available before attempting
 recovery.
@@ -146,7 +158,7 @@ Steps:
 2. `schelk recover` — should fail with a clear message about the missing tool.
 3. Install it, retry — should succeed.
 
-## 14. Destructive confirmation prompts
+## 15. Destructive confirmation prompts
 
 As a user, I want destructive commands (`init-new`, `init-from`, `full-recover`, `promote`) to
 prompt for confirmation by default and proceed non-interactively only with `-y`.
@@ -156,7 +168,7 @@ Steps:
 2. Decline — should abort without changes.
 3. Run `schelk init-new ... -y` — should proceed without prompting.
 
-## 15. Reinitialization when state already exists
+## 16. Reinitialization when state already exists
 
 As a user, if schelk is already initialized, I want a second `init-*` call to prompt for
 reinitialization rather than silently overwriting state.
@@ -166,7 +178,7 @@ Steps:
 2. `schelk init-new ...` again — should warn that state already exists and prompt to reinitialize.
 3. Decline — state should remain unchanged.
 
-## 16. Check status
+## 17. Check status
 
 As a benchmarker, I want `schelk status` to tell me whether schelk is initialized, mounted,
 and safe to recover or promote.
@@ -177,7 +189,7 @@ Steps:
 3. After mount — should report initialized and mounted.
 4. After recover — should report initialized, not mounted.
 
-## 17. Cleanup after recover and promote
+## 18. Cleanup after recover and promote
 
 As a benchmarker, after `recover` or `promote`, I want schelk to leave no active dm-era device
 or temporary state behind.
@@ -187,7 +199,7 @@ Steps:
 2. Verify no dm-era device exists (`dmsetup ls` should not show `bench_era`).
 3. Verify no leftover `changed.xml` or temp files.
 
-## 18. Recover is a no-op when not mounted
+## 19. Recover is a no-op when not mounted
 
 As a CI pipeline author, I want `schelk recover` to succeed (exit 0) when the volume is not
 mounted, so that unconditional cleanup like `schelk recover || schelk full-recover` does not
@@ -199,7 +211,7 @@ Steps:
 3. `schelk mount` → `schelk recover` — normal recovery, also exit 0.
 4. `schelk recover` again — already recovered, should exit 0.
 
-## 19. Transparent action logging
+## 20. Transparent action logging
 
 As a benchmarker, I want every action schelk takes to be printed to the screen so I can
 understand what happened and diagnose issues.
@@ -209,7 +221,7 @@ Steps:
 2. Run `schelk mount` — should print dm-era setup and mount actions.
 3. Run `schelk recover` — should print unmount, era snapshot, block copy progress, and cleanup.
 
-## 20. Refuse to write to a volume mounted outside schelk
+## 21. Refuse to write to a volume mounted outside schelk
 
 As a benchmarker, I sometimes mount virgin or scratch outside of schelk by mistake (e.g.,
 running `mount` for a quick inspection and forgetting to unmount). If I then run a destructive

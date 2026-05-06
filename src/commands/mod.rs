@@ -7,4 +7,5 @@ pub mod init_new;
 pub mod mount;
 pub mod promote;
 pub mod recover;
+pub mod restore;
 pub mod status;

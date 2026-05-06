@@ -150,6 +150,7 @@ sudo schelk init-from ... --no-copy
 sudo schelk mount       # mount scratch with dm-era tracking
 ./bench.sh              # run the benchmark
 sudo schelk recover     # restore scratch to virgin
+sudo schelk restore     # restore scratch, then mount it for the next run
 ```
 
 ### Promote scratch to a new baseline

@@ -24,7 +24,7 @@ use cli::{Cli, Command};
 
 /// Install signal handlers that ignore SIGINT and SIGTERM, printing a warning instead.
 ///
-/// Commands like `recover`, `mount`, `promote`, and `full-recover` manipulate dm-era devices
+/// Commands like `recover`, `restore`, `mount`, `promote`, and `full-recover` manipulate dm-era devices
 /// and block volumes in multi-step sequences. Interrupting them mid-way can leave volumes in
 /// an inconsistent state that requires a costly full recovery. We catch these signals and
 /// refuse to act on them, letting the operation complete naturally.
@@ -125,6 +125,10 @@ async fn main() -> eyre::Result<()> {
         Some(Command::Recover { kill }) => {
             ignore_termination_signals();
             commands::recover::run(kill).await
+        }
+        Some(Command::Restore { kill }) => {
+            ignore_termination_signals();
+            commands::restore::run(kill).await
         }
         Some(Command::Promote { kill }) => {
             ignore_termination_signals();
