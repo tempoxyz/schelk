@@ -19,6 +19,7 @@
 use eyre::Result;
 
 use crate::error::{not_initialized, volume_mismatch};
+use crate::timing::{self, StepTimer};
 use crate::{dmera, env, io, mount, ramdisk, state, volume};
 use eyre::eyre;
 
@@ -33,8 +34,10 @@ pub async fn run() -> Result<()> {
 
 /// Run the mount command while the caller holds the schelk state lock.
 pub(crate) async fn run_locked() -> Result<()> {
+    let command_timer = StepTimer::start("mount", "total");
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
+    let precondition_timer = StepTimer::start("mount", "validate_preconditions");
     if app_state.is_mounted {
         return Err(crate::error::already_mounted());
     }
@@ -63,13 +66,17 @@ pub(crate) async fn run_locked() -> Result<()> {
             app_state.dm_era_name
         ));
     }
+    precondition_timer.finish();
 
     // Step 1: Validate RAM disk is adequately sized
+    let ramdisk_timer = StepTimer::start("mount", "validate_ramdisk_size");
     println!("Validating RAM disk size...");
     let scratch_size = volume::get_size(&app_state.scratch)?;
     ramdisk::validate_size(&app_state.ramdisk, scratch_size, app_state.granularity)?;
+    ramdisk_timer.finish();
 
     // Step 2: Spot-check volume superblocks match expected state
+    let integrity_timer = StepTimer::start("mount", "verify_volume_integrity");
     println!("Verifying volume integrity...");
     let virgin_hash = volume::hash_superblock(&app_state.virgin)?;
     if virgin_hash != app_state.virgin_superblock_hash {
@@ -83,15 +90,19 @@ pub(crate) async fn run_locked() -> Result<()> {
             "Scratch volume superblock does not match virgin. Run 'schelk full-recover' first.",
         ));
     }
+    integrity_timer.finish();
 
     // Step 3: Zero the RAM disk.
     //
     // I am not entirely sure if this is strictly necessary but ChatGPT was suggesting that and
     // we'll err on the safe side here.
+    let zero_timer = StepTimer::start("mount", "zero_ramdisk");
     println!("Zeroing RAM disk...");
     io::zero(&app_state.ramdisk)?;
+    zero_timer.finish();
 
     // Step 4: Create dm-era device
+    let create_timer = StepTimer::start("mount", "create_dm_era_device");
     println!("Creating dm-era device '{}'...", app_state.dm_era_name);
     if let Err(e) = dmera::create(
         &app_state.dm_era_name,
@@ -104,16 +115,20 @@ pub(crate) async fn run_locked() -> Result<()> {
     {
         return Err(e.wrap_err("Failed to create dm-era device"));
     }
+    create_timer.finish();
 
     // Step 5: Checkpoint to start era tracking
+    let checkpoint_timer = StepTimer::start("mount", "initialize_era_tracking");
     println!("Initializing era tracking...");
     if let Err(e) = dmera::checkpoint(&app_state.dm_era_name).await {
         // Rollback: remove dm-era device on failure
         let _ = dmera::remove(&app_state.dm_era_name).await;
         return Err(e.wrap_err("Failed to checkpoint dm-era device"));
     }
+    checkpoint_timer.finish();
 
     // Step 6: Mount the dm-era device
+    let mount_timer = StepTimer::start("mount", "mount_dm_era_device");
     let dm_device = dmera::device_path(&app_state.dm_era_name);
     println!(
         "Mounting {} at {}...",
@@ -132,12 +147,15 @@ pub(crate) async fn run_locked() -> Result<()> {
         let _ = dmera::remove(&app_state.dm_era_name).await;
         return Err(e.wrap_err("Failed to mount dm-era device"));
     }
+    mount_timer.finish();
 
     // Step 7: Update app state to mark as mounted
+    let state_timer = StepTimer::start("mount", "save_state");
     let mut app_state = app_state;
     app_state.is_mounted = true;
     app_state.current_era = Some(1);
     state::save(&app_state)?;
+    state_timer.finish();
 
     println!();
     println!(
@@ -148,6 +166,16 @@ pub(crate) async fn run_locked() -> Result<()> {
         println!("Mount options: {}", opts);
     }
     println!("All writes are now being tracked by dm-era.");
+
+    command_timer.finish_with(|operation, step, elapsed| {
+        tracing::info!(
+            operation = operation,
+            step = step,
+            elapsed_ms = timing::elapsed_ms(elapsed),
+            elapsed = %timing::format_duration(elapsed),
+            "completed"
+        );
+    });
 
     Ok(())
 }

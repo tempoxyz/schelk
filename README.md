@@ -153,6 +153,10 @@ sudo schelk recover     # restore scratch to virgin
 sudo schelk restore     # restore scratch, then mount it for the next run
 ```
 
+`recover`, `mount`, `restore`, and `promote` also emit `tracing` timing events to stderr by
+default. Each step records `operation`, `step`, `elapsed_ms`, and `elapsed`; copy steps also
+record `blocks` and `bytes`. Set `RUST_LOG=warn` or `RUST_LOG=off` to quiet these events.
+
 ### Promote scratch to a new baseline
 
 Use this after a one-time state change that should be kept across future runs, such as a

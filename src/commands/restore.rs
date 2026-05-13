@@ -7,6 +7,7 @@
 use eyre::{Result, WrapErr};
 
 use crate::commands::{mount, recover};
+use crate::timing::{self, StepTimer};
 use crate::{env, state};
 
 /// Run the restore command.
@@ -18,20 +19,36 @@ pub async fn run(kill: bool) -> Result<()> {
 
     let _lock = state::lock()?;
 
+    let command_timer = StepTimer::start("restore", "total");
+
     println!("Restoring scratch volume from virgin, then remounting it.");
     println!();
 
+    let recover_timer = StepTimer::start("restore", "recover_phase");
     recover::run_locked(kill)
         .await
         .wrap_err("Restore failed during recovery")?;
+    recover_timer.finish();
 
     println!();
     println!("Recovery succeeded. Mounting restored scratch volume...");
     println!();
 
+    let mount_timer = StepTimer::start("restore", "mount_phase");
     mount::run_locked()
         .await
         .wrap_err("Restore recovered the scratch volume but failed to mount it")?;
+    mount_timer.finish();
+
+    command_timer.finish_with(|operation, step, elapsed| {
+        tracing::info!(
+            operation = operation,
+            step = step,
+            elapsed_ms = timing::elapsed_ms(elapsed),
+            elapsed = %timing::format_duration(elapsed),
+            "completed"
+        );
+    });
 
     Ok(())
 }

@@ -22,12 +22,12 @@
 // This is a destructive operation - requires confirmation unless -y flag is set.
 
 use std::io::{Write, stdout};
-use std::time::Instant;
 
 use eyre::{Result, WrapErr, eyre};
 
 use crate::confirm;
 use crate::error::not_initialized;
+use crate::timing::{self, StepTimer};
 use crate::{dmera, env, mount, state, volume};
 
 /// Run the promote command.
@@ -39,6 +39,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
 
     let _lock = state::lock()?;
 
+    let command_timer = StepTimer::start("promote", "total");
     let app_state = state::load()?.ok_or_else(not_initialized)?;
 
     if !app_state.is_mounted {
@@ -48,6 +49,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
     let base_era = app_state.current_era.unwrap_or(0);
 
     // Check that dmsetup and era_invalidate are available
+    let prerequisite_timer = StepTimer::start("promote", "validate_prerequisites");
     dmera::check_dmsetup().await?;
     dmera::check_era_invalidate().await?;
 
@@ -60,6 +62,7 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
             app_state.dm_era_name
         ));
     }
+    prerequisite_timer.finish();
 
     println!("Promoting scratch to virgin (destructive)");
     println!("  Virgin:  {}", app_state.virgin.display());
@@ -73,25 +76,40 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
     println!();
 
     // Step 1: Unmount the filesystem (if actually mounted)
+    let unmount_timer = StepTimer::start("promote", "unmount_filesystem");
     if mount::is_mounted(&app_state.mount_point)? {
         println!("Unmounting {}...", app_state.mount_point.display());
         mount::unmount(&app_state.mount_point, kill)
             .await
             .wrap_err("Failed to unmount filesystem")?;
+        unmount_timer.finish();
     } else {
         println!(
             "Mountpoint {} not actually mounted, skipping unmount...",
             app_state.mount_point.display()
         );
+        unmount_timer.finish_with(|operation, step, elapsed| {
+            tracing::info!(
+                operation = operation,
+                step = step,
+                skipped = true,
+                elapsed_ms = timing::elapsed_ms(elapsed),
+                elapsed = %timing::format_duration(elapsed),
+                "completed"
+            );
+        });
     }
 
     // Step 2: Take dm-era metadata snapshot
+    let snapshot_timer = StepTimer::start("promote", "take_metadata_snapshot");
     println!("Taking dm-era metadata snapshot...");
     dmera::take_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to take metadata snapshot")?;
+    snapshot_timer.finish();
 
     // Step 3: Collect changed blocks with era_invalidate
+    let collect_timer = StepTimer::start("promote", "collect_changed_blocks");
     println!("Collecting changed blocks since era {}...", base_era);
     let changed_blocks = match dmera::get_changed_blocks(&app_state.ramdisk, base_era as u32) {
         Ok(blocks) => blocks,
@@ -101,8 +119,21 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
             return Err(e.wrap_err("Failed to collect changed blocks"));
         }
     };
+    let total_blocks: u64 = changed_blocks.iter().map(|r| r.len).sum();
+    collect_timer.finish_with(|operation, step, elapsed| {
+        tracing::info!(
+            operation = operation,
+            step = step,
+            ranges = changed_blocks.len(),
+            blocks = total_blocks,
+            elapsed_ms = timing::elapsed_ms(elapsed),
+            elapsed = %timing::format_duration(elapsed),
+            "completed"
+        );
+    });
 
     // Step 4: Drop metadata snapshot
+    let drop_snapshot_timer = StepTimer::start("promote", "drop_metadata_snapshot");
     println!(
         "Dropping metadata snapshot for '{}'...",
         app_state.dm_era_name
@@ -110,20 +141,34 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
     dmera::drop_metadata_snapshot(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to drop metadata snapshot")?;
+    drop_snapshot_timer.finish();
 
     // Step 5: Remove dm-era device
+    let remove_timer = StepTimer::start("promote", "remove_dm_era_device");
     println!("Removing dm-era device...");
     dmera::remove(&app_state.dm_era_name)
         .await
         .wrap_err("Failed to remove dm-era device")?;
+    remove_timer.finish();
 
     // Step 6: Copy affected blocks from scratch to virgin
-    let total_blocks: u64 = changed_blocks.iter().map(|r| r.len).sum();
     let total_bytes = total_blocks * app_state.granularity;
 
+    let copy_timer = StepTimer::start("promote", "copy_changed_blocks");
     let copy_duration = if changed_blocks.is_empty() {
         println!("No blocks were modified. Nothing to promote.");
-        std::time::Duration::ZERO
+        copy_timer.finish_with(|operation, step, elapsed| {
+            tracing::info!(
+                operation = operation,
+                step = step,
+                skipped = true,
+                blocks = 0,
+                bytes = 0,
+                elapsed_ms = timing::elapsed_ms(elapsed),
+                elapsed = %timing::format_duration(elapsed),
+                "completed"
+            );
+        })
     } else {
         println!(
             "Copying {} changed blocks ({}) from scratch to virgin...",
@@ -131,7 +176,6 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
             format_bytes(total_bytes)
         );
 
-        let copy_start = Instant::now();
         let mut last_percent: u64 = 0;
         volume::copy_blocks(
             &app_state.scratch,
@@ -148,19 +192,31 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
             },
         )
         .wrap_err("Failed to copy blocks")?;
-        let elapsed = copy_start.elapsed();
+        let elapsed = copy_timer.finish_with(|operation, step, elapsed| {
+            tracing::info!(
+                operation = operation,
+                step = step,
+                blocks = total_blocks,
+                bytes = total_bytes,
+                elapsed_ms = timing::elapsed_ms(elapsed),
+                elapsed = %timing::format_duration(elapsed),
+                "completed"
+            );
+        });
 
         println!("\r  Progress: 100% - Done");
         elapsed
     };
 
     // Step 7: Update app state
+    let state_timer = StepTimer::start("promote", "save_state");
     let mut app_state = app_state;
     app_state.is_mounted = false;
     app_state.current_era = None;
     // Recompute virgin superblock hash since virgin content has changed
     app_state.virgin_superblock_hash = volume::hash_superblock(&app_state.virgin)?;
     state::save(&app_state)?;
+    state_timer.finish();
 
     println!();
     println!("Promote complete.");
@@ -172,6 +228,18 @@ pub async fn run(yes: bool, kill: bool) -> Result<()> {
         println!("  Time elapsed:    {}", format_duration(copy_duration));
         println!("  Average speed:   {}/s", format_bytes(speed as u64));
     }
+
+    command_timer.finish_with(|operation, step, elapsed| {
+        tracing::info!(
+            operation = operation,
+            step = step,
+            blocks = total_blocks,
+            bytes = total_bytes,
+            elapsed_ms = timing::elapsed_ms(elapsed),
+            elapsed = %timing::format_duration(elapsed),
+            "completed"
+        );
+    });
 
     Ok(())
 }

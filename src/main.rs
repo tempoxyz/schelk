@@ -14,11 +14,13 @@ mod io;
 mod mount;
 mod ramdisk;
 mod state;
+mod timing;
 mod volume;
 
 use std::process;
 
 use tokio::signal::unix::{SignalKind, signal};
+use tracing_subscriber::EnvFilter;
 
 use cli::{Cli, Command};
 
@@ -56,9 +58,23 @@ fn ignore_termination_signals() {
     });
 }
 
+fn init_tracing() {
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("schelk=info"));
+
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_ansi(false)
+        .with_writer(std::io::stderr)
+        .compact()
+        .try_init();
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     color_eyre::install()?;
+    init_tracing();
 
     let cli = Cli::parse();
 
