@@ -8,7 +8,7 @@
 //   4. Must not already be mounted (fool-proof check)
 //
 // Operation:
-//   1. Zero the RAM disk
+//   1. Reset the RAM disk metadata device
 //   2. Create dm-era device: dmsetup create <dm_era_name> ... era /dev/ram0 /dev/scratch <granularity>
 //   3. Mount the dm-era device at the configured mount point
 //   4. Update app state to mark as mounted
@@ -84,12 +84,10 @@ pub(crate) async fn run_locked() -> Result<()> {
         ));
     }
 
-    // Step 3: Zero the RAM disk.
-    //
-    // I am not entirely sure if this is strictly necessary but ChatGPT was suggesting that and
-    // we'll err on the safe side here.
-    println!("Zeroing RAM disk...");
-    io::zero(&app_state.ramdisk)?;
+    // Step 3: Reset the RAM disk metadata device.
+    println!("Resetting RAM disk metadata...");
+    let reset_method = io::reset_to_zero(&app_state.ramdisk)?;
+    println!("RAM disk reset using {}.", reset_method.description());
 
     // Step 4: Create dm-era device
     println!("Creating dm-era device '{}'...", app_state.dm_era_name);
