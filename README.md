@@ -111,6 +111,10 @@ cargo install --path .
 sudo modprobe brd rd_size=4194304
 ```
 
+When the configured metadata device is a whole brd device such as `/dev/ram0`, `schelk mount`
+resets it with `blkdiscard` when available. That drops brd's backing pages instead of writing
+zeroes through the entire ramdisk, with a zero-write fallback for devices that do not support this.
+
 ### Initialize
 
 There are two initialization paths:

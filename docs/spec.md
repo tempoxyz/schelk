@@ -110,8 +110,10 @@ Checks:
 1. Spot checks state of volumes and verifies that it is the same as the expected per the state of the 
 app.
 
-Zeroes the ramdisk and initializes dm-era for the scratch volume using the configured device name
-(stored in state as `dm_era_name`, defaults to `bench_era`).
+Resets the ramdisk metadata device and initializes dm-era for the scratch volume using the
+configured device name (stored in state as `dm_era_name`, defaults to `bench_era`). For whole Linux
+brd devices such as `/dev/ram0`, reset may use `blkdiscard` because discarded brd pages read back as
+zeroes; other devices fall back to writing zeroes across the metadata device.
 
 ```
 dmsetup create <dm_era_name> ... era /dev/ram0 /dev/nvme_ <granularity>
