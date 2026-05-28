@@ -17,7 +17,7 @@
 use std::io::{self, Write};
 use std::time::Instant;
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 
 use crate::confirm;
 use crate::error::{already_mounted, not_initialized};
@@ -31,24 +31,28 @@ pub async fn run(yes: bool) -> Result<()> {
 
     let mut app_state = state::load()?.ok_or_else(not_initialized)?;
 
-    if app_state.is_mounted {
-        // After a reboot or power loss the state file still says "mounted" but
-        // the dm-era device and filesystem mount are gone.  Detect this stale
-        // state and allow full-recover to proceed — there is nothing to unmount.
-        let dm_era_exists = dmera::exists(&app_state.dm_era_name).await?;
-        let fs_mounted = mount::is_mounted(&app_state.mount_point)?;
+    // Read ground truth: a dm-era target or filesystem mount on scratch will
+    // block the exclusive open in full_copy, so we need to know exactly what's
+    // sitting on top.
+    let dm_era_exists = dmera::exists(&app_state.dm_era_name).await?;
+    let fs_mounted = mount::is_mounted(&app_state.mount_point)?;
 
-        if dm_era_exists || fs_mounted {
-            return Err(already_mounted());
-        }
+    if fs_mounted {
+        // Refuse: unmounting an active filesystem here could lose data the user
+        // is still writing. They must unmount (or `schelk recover`) first.
+        return Err(already_mounted());
+    }
 
+    if app_state.is_mounted && !dm_era_exists {
         println!(
             "State says mounted, but dm-era device and filesystem are gone \
              (likely a reboot or power loss)."
         );
         println!("Clearing stale mounted state and proceeding with full recovery.");
         println!();
+    }
 
+    if app_state.is_mounted || dm_era_exists {
         app_state.is_mounted = false;
         app_state.current_era = None;
         // Don't save yet — if we crash mid-copy the stale detection will
@@ -89,6 +93,15 @@ pub async fn run(yes: bool) -> Result<()> {
     println!("WARNING: This will overwrite ALL data on the scratch volume.");
 
     confirm::require("Proceed with full recovery?", yes)?;
+
+    // Tear down any dm-era target holding scratch — full_copy needs O_EXCL.
+    if dm_era_exists {
+        println!();
+        println!("Removing dm-era device '{}'...", app_state.dm_era_name);
+        dmera::remove(&app_state.dm_era_name)
+            .await
+            .wrap_err("Failed to remove dm-era device before full recovery")?;
+    }
 
     println!();
     println!("Copying...");
