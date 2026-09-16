@@ -2,9 +2,10 @@
 // Persists configuration and runtime state to /var/lib/schelk
 // All writes must be atomic (write to temp, fsync, rename) for crash safety
 
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eyre::{Result, WrapErr, eyre};
 use nix::fcntl::{Flock, FlockArg};
@@ -80,6 +81,33 @@ fn state_dir() -> Result<PathBuf> {
         .unwrap_or_else(|| PathBuf::from("/")))
 }
 
+/// Build a state-specific sibling path for auxiliary files.
+fn state_aux_path(path: &Path, suffix: &str) -> PathBuf {
+    let file_name = path.file_name().unwrap_or_else(|| OsStr::new("state"));
+    let mut aux_name = OsString::from(".");
+    aux_name.push(file_name);
+    aux_name.push(suffix);
+    path.with_file_name(aux_name)
+}
+
+/// Return the lock path for a given state file.
+///
+/// Keep the historical default lock path so mixed-version installs continue to
+/// coordinate on the same file. Custom state files get their own lock next to
+/// the state file, allowing independent instances in the same directory.
+fn state_lock_path(path: &Path) -> PathBuf {
+    if path == Path::new(DEFAULT_STATE_PATH) {
+        PathBuf::from("/var/lib/schelk/schelk.lock")
+    } else {
+        state_aux_path(path, ".lock")
+    }
+}
+
+/// Return the temporary path used for an atomic state-file update.
+fn state_temp_path(path: &Path) -> PathBuf {
+    state_aux_path(path, ".tmp")
+}
+
 /// Load app state from disk
 /// Returns None if state file doesn't exist
 pub fn load() -> Result<Option<AppState>> {
@@ -105,17 +133,18 @@ pub fn load() -> Result<Option<AppState>> {
 /// Returns an owned `Flock<File>` that holds the lock until dropped. This prevents concurrent
 /// schelk operations (e.g. two `recover` or `mount` calls) from racing on the same volumes.
 ///
-/// The lock file lives next to the state file (e.g. `/var/lib/schelk/schelk.lock`).
+/// The default state keeps using `/var/lib/schelk/schelk.lock` for compatibility.
+/// Custom state files use a state-specific sibling lock file.
 pub fn lock() -> Result<Flock<File>> {
-    let dir = state_dir()?;
-    lock_path(&dir.join("schelk.lock"))
+    let path = state_path()?;
+    lock_path(&state_lock_path(&path))
 }
 
 /// Acquire an exclusive flock on a specific lock file path.
 ///
 /// Same as [`lock`] but targets an arbitrary path instead of the default state directory.
 /// Useful for testing.
-pub fn lock_path(lock_path: &std::path::Path) -> Result<Flock<File>> {
+pub fn lock_path(lock_path: &Path) -> Result<Flock<File>> {
     if let Some(parent) = lock_path.parent() {
         fs::create_dir_all(parent)
             .wrap_err_with(|| format!("Failed to create directory: {}", parent.display()))?;
@@ -150,8 +179,10 @@ pub fn save(state: &AppState) -> Result<()> {
     // Serialize state
     let contents = serde_json::to_string_pretty(state).wrap_err("Failed to serialize state")?;
 
-    // Write to temporary file in same directory (for atomic rename)
-    let temp_path = dir.join(".state.json.tmp");
+    // Write to a state-specific temporary file in the same directory. This keeps
+    // atomic rename semantics while allowing independent state files to be saved
+    // concurrently in one directory.
+    let temp_path = state_temp_path(&path);
     let mut file = File::create(&temp_path).wrap_err("Failed to create temp state file")?;
 
     file.write_all(contents.as_bytes())
@@ -175,6 +206,40 @@ pub fn save(state: &AppState) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_state_aux_files_are_scoped_to_state_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state_a = dir.path().join("a.json");
+        let state_b = dir.path().join("b.json");
+
+        let lock_a = state_lock_path(&state_a);
+        let lock_b = state_lock_path(&state_b);
+        let temp_a = state_temp_path(&state_a);
+        let temp_b = state_temp_path(&state_b);
+
+        assert_ne!(lock_a, lock_b);
+        assert_ne!(temp_a, temp_b);
+        assert_eq!(lock_a, dir.path().join(".a.json.lock"));
+        assert_eq!(lock_b, dir.path().join(".b.json.lock"));
+        assert_eq!(temp_a, dir.path().join(".a.json.tmp"));
+        assert_eq!(temp_b, dir.path().join(".b.json.tmp"));
+
+        let _first = lock_path(&lock_a).expect("first state lock should succeed");
+        let _second = lock_path(&lock_b).expect("second state lock should also succeed");
+    }
+
+    #[test]
+    fn default_state_keeps_legacy_lock_path() {
+        assert_eq!(
+            state_lock_path(Path::new(DEFAULT_STATE_PATH)),
+            PathBuf::from("/var/lib/schelk/schelk.lock")
+        );
+        assert_eq!(
+            state_temp_path(Path::new(DEFAULT_STATE_PATH)),
+            PathBuf::from("/var/lib/schelk/.state.json.tmp")
+        );
+    }
 
     #[test]
     fn second_lock_fails_while_first_held() {
