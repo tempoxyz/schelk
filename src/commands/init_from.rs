@@ -43,7 +43,7 @@ pub async fn run(
     let _lock = state::lock()?;
 
     super::init_common::validate_granularity(granularity)?;
-    super::init_common::reject_same_device(&virgin, &scratch)?;
+    super::init_common::reject_device_aliases(&virgin, &scratch, &ramdisk)?;
     dmera::validate_name(&dm_era_name)?;
 
     // Check if already initialized.
