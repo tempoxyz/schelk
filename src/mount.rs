@@ -185,17 +185,31 @@ pub fn is_mounted(mountpoint: &Path) -> Result<bool> {
         .to_string_lossy()
         .into_owned();
 
+    Ok(mounts_contains_mountpoint(&mounts, &mountpoint_str))
+}
+
+/// Check a mounts-file payload for a target mountpoint.
+///
+/// Fields in /proc/mounts use octal escapes for whitespace and backslashes,
+/// so the mountpoint field must be decoded before comparing it to a real path.
+fn mounts_contains_mountpoint(mounts: &str, mountpoint: &str) -> bool {
     for line in mounts.lines() {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() >= 2 {
-            // Second field is the mountpoint
-            if parts[1] == mountpoint_str {
-                return Ok(true);
-            }
+        if parts.len() >= 2 && unescape_mount_field(parts[1]) == mountpoint {
+            return true;
         }
     }
+    false
+}
 
-    Ok(false)
+fn unescape_mount_field(field: &str) -> String {
+    // Decode the mntent escapes in an order that preserves a literal "\\040"
+    // represented as "\\134040": decode whitespace first, then backslash.
+    field
+        .replace("\\040", " ")
+        .replace("\\011", "\t")
+        .replace("\\012", "\n")
+        .replace("\\134", "\\")
 }
 
 #[cfg(test)]
@@ -203,6 +217,27 @@ mod tests {
     use super::*;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn mount_parser_decodes_escaped_mountpoint() {
+        let mounts = "/dev/loop0 /tmp/schelk\\040test ext4 rw 0 0\n";
+        assert!(mounts_contains_mountpoint(mounts, "/tmp/schelk test"));
+    }
+
+    #[test]
+    fn mount_field_decodes_standard_mntent_escapes() {
+        assert_eq!(
+            unescape_mount_field(r"/tmp/a\040b\011c\012d\134e"),
+            "/tmp/a b\tc\nd\\e"
+        );
+    }
+
+    #[test]
+    fn escaped_backslash_is_not_double_decoded() {
+        let mounts = r"/dev/loop0 /tmp/literal\134040name ext4 rw 0 0";
+        assert!(mounts_contains_mountpoint(mounts, r"/tmp/literal\040name"));
+        assert!(!mounts_contains_mountpoint(mounts, "/tmp/literal name"));
+    }
 
     /// Mount a tmpfs at `mountpoint` using nix. Requires CAP_SYS_ADMIN.
     fn mount_tmpfs(mountpoint: &Path) {
