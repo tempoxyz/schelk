@@ -9,9 +9,9 @@ pub fn validate_granularity(granularity: u64) -> Result<()> {
     if granularity == 0 {
         return Err(eyre!("Granularity must be greater than 0."));
     }
-    if !granularity.is_multiple_of(512) {
+    if !granularity.is_multiple_of(4096) {
         return Err(eyre!(
-            "Granularity must be a multiple of 512 bytes (got {} bytes).",
+            "Granularity must be a multiple of 4096 bytes (got {} bytes).",
             granularity
         ));
     }
@@ -46,15 +46,17 @@ mod tests {
     }
 
     #[test]
-    fn granularity_not_512_multiple_rejected() {
+    fn granularity_not_4096_multiple_rejected() {
+        assert!(validate_granularity(512).is_err());
+        assert!(validate_granularity(1024).is_err());
+        assert!(validate_granularity(2048).is_err());
         assert!(validate_granularity(4097).is_err());
-        assert!(validate_granularity(1000).is_err());
     }
 
     #[test]
     fn granularity_valid_accepted() {
-        assert!(validate_granularity(512).is_ok());
         assert!(validate_granularity(4096).is_ok());
+        assert!(validate_granularity(8192).is_ok());
     }
 
     #[test]
