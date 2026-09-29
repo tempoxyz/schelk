@@ -137,7 +137,26 @@ pub(crate) async fn run_locked() -> Result<()> {
     let mut app_state = app_state;
     app_state.is_mounted = true;
     app_state.current_era = Some(1);
-    state::save(&app_state)?;
+    if let Err(save_err) = state::save(&app_state) {
+        // The filesystem is already mounted at this point, so a failed state
+        // update must not leave reality out of sync with the persisted state.
+        // Roll back in reverse order: unmount first, then remove the dm-era
+        // target once it is no longer in use.
+        let rollback_err = match mount::unmount(&app_state.mount_point, false).await {
+            Ok(()) => dmera::remove(&app_state.dm_era_name).await.err(),
+            Err(e) => Some(e.wrap_err("Failed to unmount during state-save rollback")),
+        };
+
+        return if let Some(rollback_err) = rollback_err {
+            Err(save_err.wrap_err(format!(
+                "Failed to persist mounted state; rollback was incomplete: {rollback_err}"
+            )))
+        } else {
+            Err(save_err.wrap_err(
+                "Failed to persist mounted state; mount was rolled back successfully",
+            ))
+        };
+    }
 
     println!();
     println!(

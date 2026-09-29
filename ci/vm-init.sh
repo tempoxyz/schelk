@@ -150,6 +150,7 @@ teardown() {
     dmsetup remove era_b 2>/dev/null || true
     /sbin/losetup -D 2>/dev/null || true
     rm -f /var/lib/schelk/state.json
+    rm -rf /var/lib/schelk/.state.json.tmp
     rm -rf /tmp/state_a /tmp/state_b
     rm -rf "$@" 2>/dev/null || true
 }
@@ -771,6 +772,53 @@ assert_ok "full-recover succeeds after external unmount" \
 
 umount /tmp/s14_external 2>/dev/null || true
 teardown /tmp/s14 /tmp/s14_external
+
+###########################################################################
+# Story 15: Roll back a live mount when the final state save fails
+#
+# Force only the post-mount state save to fail by replacing the atomic temp
+# file path with a directory. schelk must leave neither the filesystem mount
+# nor the dm-era target live after returning the error.
+###########################################################################
+story "STORY 15: Mount rollback on state-save failure"
+
+teardown /tmp/s15
+setup_volumes /tmp/s15
+
+assert_ok "init-new" schelk init-new \
+    --virgin "$VIRGIN" --scratch "$SCRATCH" --ramdisk "$RAMDISK" \
+    --mount-point "$MP" -y
+
+# state::lock still works, but the final File::create(.state.json.tmp) fails.
+mkdir -p /var/lib/schelk/.state.json.tmp
+
+assert_fail "mount fails when state save cannot create temp file" schelk mount
+
+if ! is_mounted "$MP"; then
+    pass "failed state save rolled back filesystem mount"
+else
+    fail "mount rollback" "filesystem is still mounted after state-save failure"
+fi
+
+if ! dmsetup status bench_era >/dev/null 2>&1; then
+    pass "failed state save removed dm-era target"
+else
+    fail "dm-era rollback" "bench_era still exists after state-save failure"
+fi
+
+rm -rf /var/lib/schelk/.state.json.tmp
+
+# Persisted state should still describe an idle instance, and a normal mount
+# should work once the injected failure is removed.
+STATUS=$(schelk status 2>&1)
+echo "$STATUS" | grep -q "Mounted: no (state)" && \
+    pass "state remained unmounted after failed save" || \
+    fail "state after rollback" "state unexpectedly says mounted"
+
+assert_ok "mount succeeds after removing failure injection" schelk mount
+assert_ok "recover after rollback test" schelk recover
+
+teardown /tmp/s15
 
 ###########################################################################
 # Results
