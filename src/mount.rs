@@ -80,6 +80,7 @@ fn unmount_blocking(mountpoint: &Path, kill: bool) -> Result<()> {
                     mountpoint.display()
                 ));
             }
+            reject_self_blocker(&procs, mountpoint)?;
             for (pid, cmdline) in &procs {
                 eprintln!("  Killing PID={pid} {cmdline:?}");
                 let _ = signal::kill(Pid::from_raw(*pid as i32), Signal::SIGKILL);
@@ -112,6 +113,24 @@ fn unmount_blocking(mountpoint: &Path, kill: bool) -> Result<()> {
         }
         Err(e) => Err(eyre!(e)).wrap_err(format!("Failed to unmount {}", mountpoint.display())),
     }
+}
+
+/// Refuse to run the --kill path when schelk itself is one of the blockers.
+///
+/// Killing the current process would terminate recovery before cleanup can
+/// finish. In practice this happens when the command is launched with its cwd
+/// inside the mounted filesystem.
+fn reject_self_blocker(procs: &[(u32, String)], mountpoint: &Path) -> Result<()> {
+    let self_pid = std::process::id();
+    if procs.iter().any(|(pid, _)| *pid == self_pid) {
+        return Err(eyre!(
+            "Cannot unmount {} with --kill because schelk itself (PID={}) is using the mountpoint.\n  \
+             Run the command from outside the mountpoint and retry.",
+            mountpoint.display(),
+            self_pid
+        ));
+    }
+    Ok(())
 }
 
 /// Scan /proc to find processes with open files or cwd under `mountpoint`.
@@ -214,6 +233,33 @@ mod tests {
             None::<&str>,
         )
         .expect("mount tmpfs failed (need root + CAP_SYS_ADMIN)");
+    }
+
+    #[test]
+    fn kill_guard_rejects_current_process() {
+        let procs = vec![(std::process::id(), "schelk recover --kill".to_string())];
+        let err = reject_self_blocker(&procs, Path::new("/mnt/schelk"))
+            .expect_err("current process must not be killable");
+        let msg = format!("{err}");
+        assert!(msg.contains("schelk itself"), "unexpected error: {msg}");
+        assert!(msg.contains("outside the mountpoint"), "unexpected error: {msg}");
+    }
+
+    #[test]
+    fn kill_guard_allows_other_processes() {
+        let procs = vec![(std::process::id().saturating_add(1), "sleep 60".to_string())];
+        reject_self_blocker(&procs, Path::new("/mnt/schelk"))
+            .expect("unrelated blockers should be killable");
+    }
+
+    #[test]
+    fn process_scan_can_report_current_process() {
+        let cwd = std::env::current_dir().expect("current dir");
+        let procs = find_processes_using(&cwd);
+        assert!(
+            procs.iter().any(|(pid, _)| *pid == std::process::id()),
+            "current process should be reported when its cwd is under the scanned path"
+        );
     }
 
     /// These tests require root with CAP_SYS_ADMIN (mount/unmount privileges).
