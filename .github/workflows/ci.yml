@@ -41,32 +41,19 @@ jobs:
       - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
       - run: cargo test
 
-  clippy:
-    runs-on: ubuntu-latest
+  lint:
+    uses: tempoxyz/gh-actions/.github/workflows/rust-lint.yml@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
     permissions:
       contents: read
       id-token: write
-    steps:
-      - uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: tempoxyz/gh-actions/vendor/Swatinem/rust-cache@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - run: cargo clippy --all-targets -- -D warnings
-
-  fmt:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - uses: tempoxyz/gh-actions/actions/secure-runner@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
-      - uses: tempoxyz/gh-actions/vendor/dtolnay/rust-toolchain@35019557465e3c38ee3468be171771fd73577584 # 2026-10-20T06-22-38Z-35019557
-      - run: cargo fmt --check
+    with:
+      run-typos: false
+      run-deny: false
+      clippy-runner: ubuntu-latest
+      fmt-runner: ubuntu-latest
+      rust-toolchain: stable
+      clippy-flags: --all-targets -- -D warnings
+      fmt-flags: --check
 
   integration:
     runs-on: ubuntu-latest
